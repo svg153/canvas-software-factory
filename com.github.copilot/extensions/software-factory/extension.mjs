@@ -44,11 +44,17 @@ function factoryPrompt(repoDir, state) {
   return bootstrapPrompt(repoDir, RUNNER, state);
 }
 
-// Polling del state.json por repo para re-broadcast SSE.
+// Polling del state.json por repo para re-broadcast SSE. El timer se libera solo
+// cuando el repo se queda sin suscriptores (antes quedaba vivo para siempre).
 const watchers = new Map();
 function ensureWatch(repoDir) {
   if (watchers.has(repoDir)) return;
   const timer = setInterval(async () => {
+    if (!subscribers.get(repoDir)?.size) {
+      clearInterval(timer);
+      watchers.delete(repoDir);
+      return;
+    }
     const state = await readState(repoDir);
     if (state) broadcast(repoDir, state);
   }, 2500);
@@ -65,7 +71,7 @@ function broadcast(repoDir, state) {
 async function applyAction(repoDir, actionName, input = {}) {
   if (actionName === "get_state") {
     const state = await readState(repoDir);
-    return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, runner: RUNNER };
+    return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, notes: state?.notes || "", runner: RUNNER };
   }
   if (actionName === "play") {
     const guard = startGuardError(await readState(repoDir));
