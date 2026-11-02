@@ -1164,3 +1164,34 @@ test("init refuses a repo directory that does not exist", async (t) => {
   });
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
 });
+
+test("canvas writeStatus delegates to atomic saveState and interleaved writes keep state.json parseable", async (t) => {
+  const src = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  assert.match(src, /await saveState\(repoDir, state\)/);
+  assert.doesNotMatch(src, /writeFile/);
+
+  const repo = await mkdtemp(join(tmpdir(), "sf-writestatus-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await saveState(repo, { status: "idle", tasks: [{ id: "t1", status: "open" }], notes: ["keep"] });
+  const statePath = join(repo, ".software-factory", "state.json");
+  // Misma mutación que writeStatus: loadState -> status -> saveState.
+  const writeStatus = async (status) => {
+    const s = await loadState(repo);
+    s.status = status;
+    return saveState(repo, s);
+  };
+  const statuses = ["running", "paused", "running", "paused", "done", "running"];
+  // Secuencial: el rename concurrente sobre un destino abierto da EPERM en Windows.
+  for (let k = 0; k < 5; k++) {
+    for (const s of statuses) {
+      await writeStatus(s);
+      JSON.parse(await readFile(statePath, "utf8"));
+    }
+  }
+  const final = JSON.parse(await readFile(statePath, "utf8"));
+  assert.equal(final.status, statuses.at(-1));
+  assert.deepEqual(final.tasks, [{ id: "t1", status: "open" }]);
+  assert.deepEqual(final.notes, ["keep"]);
+  const leftovers = (await readdir(join(repo, ".software-factory"))).filter((n) => n.endsWith(".tmp"));
+  assert.deepEqual(leftovers, []);
+});
