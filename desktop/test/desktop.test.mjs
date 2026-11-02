@@ -4,7 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSidecarArgs, sidecarUrl, startSidecar } from "../sidecar.mjs";
+import { buildSidecarArgs, getFlag, parseCliArgs, sidecarUrl, startSidecar } from "../sidecar.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
@@ -32,8 +32,25 @@ test("sidecar args and url contract", () => {
 });
 
 test("missing entrypoint gives a clear error", () => {
-  assert.throws(() => startSidecar({ server: path.join(root, "nope.mjs"), repo: "r", port: 4317 }), /PR #52/);
+  assert.throws(() => startSidecar({ server: path.join(root, "nope.mjs"), repo: "r", port: 4317 }),   /runner\/server\.mjs/);
 });
+
+  test("flag parser: missing/valueless flags fall back to defaults", () => {
+    assert.deepEqual(parseCliArgs([]), { repo: undefined, port: 4317 });
+    assert.deepEqual(parseCliArgs(["--repo", "r"]), { repo: "r", port: 4317 });
+    assert.deepEqual(parseCliArgs(["--port", "--repo", "r"]), { repo: "r", port: 4317 });
+    assert.deepEqual(parseCliArgs(["--repo", "r", "--port", "5000"]), { repo: "r", port: 5000 });
+    assert.deepEqual(parseCliArgs([], { SF_REPO: "e", SF_PORT: "6000" }), { repo: "e", port: 6000 });
+    assert.equal(getFlag(["--port"], "--port"), undefined);
+  });
+
+  test("tauri.conf.json: frontendDist and icons exist", () => {
+    const conf = JSON.parse(read("src-tauri/tauri.conf.json"));
+    assert.ok(fs.statSync(path.join(root, "src-tauri", conf.build.frontendDist)).isDirectory());
+    assert.ok(fs.existsSync(path.join(root, "src-tauri", conf.build.frontendDist, "index.html")));
+    assert.ok(conf.bundle.icon.some((i) => i.endsWith(".ico")));
+    for (const i of conf.bundle.icon) assert.ok(fs.existsSync(path.join(root, "src-tauri", i)), i);
+  });
 
 test("stub sidecar serves on the URL the window loads", async () => {
   const stub = path.join(root, "test", "stub-server.mjs");
