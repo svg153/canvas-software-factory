@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  install:
+    name: Instalacion y manifiestos
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Pruebas de instalacion (COPILOT_HOME temporal)
+        shell: pwsh
+        run: ./tests/install-tests.ps1
+
+  runtime:
+    name: Runner/canvas (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sintaxis de todos los .mjs
+        run: find extensions -name '*.mjs' -exec node --check {} \;
+
+      - name: ¿Hay tests de runtime definidos?
+        id: probe
+        working-directory: extensions/software-factory
+        run: |
+          if node -e "const p=require('./package.json');const t=p.scripts&&p.scripts.test;process.exit(t&&!t.includes('no test specified')?0:1)"; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::package.json aun no define 'test'; se omite npm test."
+          fi
+
+      - name: npm install
+        if: steps.probe.outputs.has_tests == 'true'
+        working-directory: extensions/software-factory
+        run: npm install --no-audit --no-fund
+
+      - name: npm test
+        if: steps.probe.outputs.has_tests == 'true'
+        working-directory: extensions/software-factory
+        run: npm test
