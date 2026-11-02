@@ -66,3 +66,14 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 This is a standalone repo on purpose: the plugin bundles a canvas extension with its
 runner and has its own release cadence. It can still be listed from a marketplace
 (`marketplace.json`) like sibling plugins. MIT licensed.
+
+## Development
+
+No dependencies needed for the runner: tests use the built-in `node:test` runner.
+
+```bash
+node --test extensions/software-factory/runner/test/   # unit + CLI e2e
+```
+
+CI (`.github/workflows/ci.yml`) runs `node --check` on every `.mjs` plus the test
+suite on each push/PR. Tests never call `gh` for real (dry-run paths only).
