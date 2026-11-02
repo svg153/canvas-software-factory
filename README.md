@@ -85,8 +85,10 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
   --repo owner/name --project <project-number> --rounds 3
 # Add --project-owner <owner> if the Project belongs to a different owner
 
-# 2. Open the "Software Factory" canvas (pass repo=<absolute path> as input
-#    if the factory should target a repo other than the session workspace).
+# 2. Open the "Software Factory" canvas. Ask your agent to open it with
+#    input.repo=<absolute path> — the extension host is not bound to a chat
+#    session, so without an explicit repo the panel has no workspace to manage
+#    (it shows a warning and refuses writes outside a git repo).
 
 # 3. ▶ Play. Watch the pipeline; the agent executes work orders and marks them done.
 #    ⏸ Pause anytime. State lives in <repo>/.software-factory/.

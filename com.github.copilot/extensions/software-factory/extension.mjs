@@ -1,6 +1,7 @@
 // Software Factory canvas — panel de control de la fábrica.
 // Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
 import { readFile } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,6 +70,12 @@ function broadcast(repoDir, state) {
 }
 
 async function applyAction(repoDir, actionName, input = {}) {
+  // El host de extensiones no es una sesión de chat: sin ?repo= válido el defaultRepo
+  // cae a un directorio cualquiera. Nunca escribamos estado de fábrica fuera de un git.
+  if (!repoIsGitWorkspace(repoDir)) {
+    throw new CanvasError("sf_repo_no_permitido",
+      "El panel no tiene un repo de trabajo. Pide al agente que reabra el canvas con input.repo = la ruta del workspace de tu sesión.");
+  }
   if (actionName === "get_state") {
     const state = await readState(repoDir);
     return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, notes: state?.notes || "", runner: RUNNER };
@@ -101,6 +108,16 @@ async function applyAction(repoDir, actionName, input = {}) {
 
 const defaultRepo = () => session?.workspacePath || process.cwd();
 const allowlist = createRepoAllowlist({ defaultRepo });
+// El host de extensiones no es una sesión de chat: su cwd/workspacePath no es un repo.
+// Sin input.repo el panel debe avisar en vez de gestionar un directorio cualquiera.
+const repoIsGitWorkspace = (dir) => {
+  try {
+    statSync(join(dir, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+};
 // Las acciones del canvas también pasan por el allowlist (no solo HTTP).
 const repoFrom = (input) => allowlist.resolve(input?.repo);
 
@@ -129,7 +146,7 @@ const factoryCanvas = createCanvas({
   inputSchema: {
     type: "object",
     properties: {
-      repo: { type: "string", description: "Ruta absoluta del repo (por defecto, el workspace de la sesión)." },
+      repo: { type: "string", description: "Ruta absoluta del repo a gestionar (obligatoria: el host de extensiones no está ligado a una sesión)." },
       title: { type: "string" },
     },
   },
@@ -187,10 +204,10 @@ const factoryCanvas = createCanvas({
     },
   ],
   async open({ instanceId, input }) {
-    // Abrir el canvas con una ruta es la autorización explícita de esa raíz.
-    // Sin input.repo usamos el workspace de la sesión: si no, el panel caería en
-    // process.cwd() (el dir de session-state) y gestionaría el directorio equivocado.
-    const repoDir = input?.repo ? allowlist.authorize(input.repo) : (session?.workspacePath || "");
+    // El host de extensiones es un proceso propio (no una sesión de chat): la única
+    // forma fiable de conocer el repo es input.repo. Sin él, dejar repo vacío para
+    // que la UI muestre el aviso en lugar de gestionar un directorio aleatorio.
+    const repoDir = input?.repo ? allowlist.authorize(input.repo) : "";
     return {
       url: `${baseUrl}/?instanceId=${encodeURIComponent(instanceId)}&repo=${encodeURIComponent(repoDir)}`,
       title: input?.title || "Software Factory",

@@ -36,7 +36,11 @@ document.getElementById("initBtn").onclick = () => action("init", createInitPayl
 try {
   const state = await (await fetch(routeWithRepo("/state", repo))).json();
   const repoPathEl = document.getElementById("repopath");
-  if (repoPathEl) repoPathEl.textContent = `📁 ${state.repo || repo}`;
+  if (repoPathEl) {
+    repoPathEl.textContent = repo
+      ? `📁 ${state.repo || repo}`
+      : "⚠ Sin repo asignado: pide al agente que reabra el canvas con input.repo = ruta de tu workspace";
+  }
   renderState(state.status === "missing" ? null : state);
   const events = new EventSource(routeWithRepo("/events", repo));
   events.onmessage = (event) => renderState(JSON.parse(event.data));
