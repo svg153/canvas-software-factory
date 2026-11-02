@@ -27,6 +27,20 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 
 ## Install
 
+**Universal install (any OS, any harness; Node 20+, no dependencies):**
+
+```bash
+node tools/sf-install.mjs --harness <copilot|claude|codex|opencode|generic> [--home DIR] [--dry-run]
+node tools/sf-install.mjs --harness <x> --check   # exit 1 + reinstall hint if the installed copy drifts from plugin.json
+```
+
+It copies the dependency-free runner plus `SKILL.md` to the harness convention
+(`~/.copilot|.claude|.codex/skills/software-factory`, `~/.config/opencode/skill/software-factory`)
+or, for `generic`, appends an idempotent marked block to `~/AGENTS.md` (runner in
+`~/.software-factory/runner`). It is additive (never deletes), validates the source before
+writing, and records a version marker (`.sf-install.json`) used by `--check`.
+`--dry-run` lists actions without writing; `--home` overrides the home directory.
+
 **Option A — installer script (Windows):**
 
 ```powershell
