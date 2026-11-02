@@ -19,7 +19,7 @@ export function bootstrapPrompt(repoDir, runnerPath, state) {
     `Runner: node "${runnerPath}"`,
     state
       ? `Estado actual: round ${state.round}/${state.max_rounds}, fase "${state.phase}", status ${state.status}.`
-      : `Sin estado: ejecuta primero init con el repo appropriate (usa gh para owner/name).`,
+      : `Sin estado: ejecuta primero node "${runnerPath}" init "${repoDir}" --repo owner/name (deduce owner/name con gh repo view --json nameWithOwner; no continúes sin estado).`,
     `Empieza con: node "${runnerPath}" next "${repoDir}" — luego trabaja cada work order pendiente,`,
     `guarda resultados y marca complete con: node "${runnerPath}" complete "${repoDir}" <taskId>.`,
     `Avanza fases hasta pausar o terminar.`,
@@ -27,7 +27,6 @@ export function bootstrapPrompt(repoDir, runnerPath, state) {
 }
 
 export function discoverPrompt(state, task) {
-  const p = paths(state.repo_path);
   return `# Fase ${task.round} · Descubrimiento (auditoría del repo)
 
 Eres el auditor de la Software Factory para ${state.repo || state.repo_path}.
@@ -39,13 +38,14 @@ Analiza el repo (_stack_, tests, CI, lint, deuda, seguridad, docs) y devuelve:
 4. Riesgos de seguridad (usa la skill de seguridad si está disponible).
 5. Estado de la documentación y del GitHub Project actual.
 
-Guarda el informe en ${p.results}/discover-r${task.round}.md.
 ${RESULTS_NOTE(state, task)}`;
 }
 
 export function planPrompt(state, task) {
   const p = paths(state.repo_path);
-  const discover = `${p.results}/discover-r${state.round}.md`;
+  // El informe discover vive en el result_file de su tarea: es lo que `complete` exige.
+  const discoverTask = (state.tasks || []).find((t) => t.phase === "discover" && t.round === task.round);
+  const discover = discoverTask?.result_file || `${p.results}/r${task.round}-discover-*.md`;
   return `# Fase ${task.round} · Plan GSD (Goal → Spec → Deliverables)
 
 Actúa como el planificador GSD de la Software Factory.

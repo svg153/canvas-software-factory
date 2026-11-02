@@ -2,7 +2,7 @@
 // sf.mjs — Software Factory runner CLI.
 // Uso: node sf.mjs <command> <repoPath> [args...]
 import { resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
   loadState, saveState, defaultState, logEvent, paths,
@@ -70,6 +70,10 @@ async function emitTasks(state, { dryRun = false } = {}) {
 }
 
 async function cmdInit() {
+  if (!existsSync(repoPath) || !statSync(repoPath).isDirectory()) {
+    console.error(`El directorio ${repoPath} no existe. Clona antes el repo y pasa su ruta absoluta.`);
+    process.exit(1);
+  }
   // Re-init sin --force destruiría el progreso (tasks, issues, fase actual).
   // Incluye state ilegible: existe decision de datos que no debe pisarse en silencio
   // (el canvas también pasa por aquí, sin --force implícito).

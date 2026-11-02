@@ -21,6 +21,9 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 - Node 20+, `gh` CLI authenticated (issues/Project phase), a GitHub Project number if you
   want issues enqueued (`gh project list`).
 - GitHub Copilot desktop app with canvas extensions enabled.
+- For `install.ps1` and the install test suite: PowerShell 7+ (`pwsh`) on Windows, as
+  used by CI. `@github/copilot-sdk` is resolved by the app's canvas runtime, so a fresh
+  install does not need `node_modules`.
 
 ## Install
 
@@ -56,11 +59,21 @@ does not claim to. That vendored schema is Apache-2.0 licensed material from
 (`tools/schemas/LICENSE-Apache-2.0.txt`) and a third-party notice
 (`tools/schemas/NOTICE.md`) ship beside it, and a regression test checks they are
 present. Everything else in this repo remains MIT.
-Use the same command with `-Force` to replace an existing installation (your
-`<repo>/.software-factory/` state and any installed `artifacts/` are preserved),
-then reload extensions in the app (or restart it).
+The installer is **additive**: it validates the source first (required files present,
+`canvas-meta.json`/`plugin.json` parseable, `main` resolving) and aborts *before
+writing anything* if the source is invalid, leaving an existing installation intact.
+It then copies files in place and never deletes the target directory, so data such as
+`artifacts/` or local files you added survive installs and updates. Use `-Force` to
+skip the update confirmation and `-CopilotHome <path>` to install into a different
+home (the test suite uses this so it never touches your real install). Then reload
+extensions in the app (or restart it).
 
-**Option B — awesome-copilot:** once accepted as an external plugin, install it from
+**Option B — manual:** copy `com.github.copilot/extensions/software-factory/` to
+`<COPILOT_HOME>/extensions/software-factory/`, generate its `canvas.json` with
+`node tools/make-canvas-manifest.mjs . <COPILOT_HOME>/extensions/software-factory`,
+and copy `skills/software-factory/` to `<COPILOT_HOME>/skills/software-factory/`.
+
+**Option C — awesome-copilot:** once accepted as an external plugin, install it from
 the catalog with one click. To propose it, open an external-plugin submission issue in
 `github/awesome-copilot` pointing at a release tag + commit SHA of this repo.
 
@@ -160,6 +173,14 @@ validated against the vendored Agent Plugins 1.0.0 schema — the full official
 awesome-copilot gate is not executed here),
 generates the install-target `canvas.json` with
 `tools/make-canvas-manifest.mjs`, and runs the install suite on `windows-latest`.
+
+## Limitations (verified, not promised)
+
+- The installer updates files in place but does not remove files deleted upstream; a
+  file that no longer exists in the source can linger in the install target.
+- `install.ps1` uses Windows-style paths; on Linux/macOS use the manual install.
+- Canvas discovery relies on the generated `canvas.json` and the app's extension host,
+  which this repo does not ship or control.
 
 ## Repo layout notes
 

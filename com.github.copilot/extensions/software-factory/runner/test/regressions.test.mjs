@@ -12,7 +12,7 @@ import { createFactoryServer } from "../lib/http.mjs";
 import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
 import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state.mjs";
-import { bootstrapPrompt, discoverPrompt, grillPrompt } from "../lib/prompts.mjs";
+import { bootstrapPrompt, discoverPrompt, grillPrompt, planPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
 import { buildCanvasManifest } from "../../../../../tools/make-canvas-manifest.mjs";
 import { checkExternalLayout, validatePluginManifest, validateAgainstSchema } from "../../../../../tools/check-external-layout.mjs";
@@ -1133,4 +1133,34 @@ test("grill prompt is fully Spanish (no CJK glyphs)", async () => {
   assert.doesNotMatch(src, /[\u3400-\u9FFF\u3000-\u303F\uFF00-\uFFEF]/, "prompts.mjs no debe contener caracteres CJK");
   const text = grillPrompt({ repo_path: "C:\\repos\\demo" }, { round: 1, id: "r1-grill-01" });
   assert.match(text, /qué supuesto es frágil/);
+});
+
+test("plan reads the discover report from the discover task result_file (single source)", () => {
+  const repo = join(tmpdir(), "sf-plan-src");
+  const discoverTask = { id: "r2-discover-07", phase: "discover", round: 2, result_file: join(repo, ".software-factory", "results", "r2-discover-07.md") };
+  const state = { repo_path: repo, repo: "org/repo", round: 2, tasks: [discoverTask] };
+  const discover = discoverPrompt(state, discoverTask);
+  assert.doesNotMatch(discover, /discover-r\d/, "discover ya no pide un segundo fichero que complete no valida");
+  assert.ok(discover.includes(discoverTask.result_file));
+  const plan = planPrompt(state, { id: "r2-plan-08", phase: "plan", round: 2, result_file: join(repo, "x.md") });
+  assert.ok(plan.includes(discoverTask.result_file), "plan lee el informe que complete exige");
+  assert.doesNotMatch(plan, /discover-r\d/);
+});
+
+test("bootstrap prompt without state gives the exact quoted init command", () => {
+  const prompt = bootstrapPrompt("C:\\repo con espacios", "C:\\runner\\sf.mjs", null);
+  assert.match(prompt, /node "C:\\runner\\sf\.mjs" init "C:\\repo con espacios" --repo owner\/name/);
+  assert.doesNotMatch(prompt, /appropriate/);
+});
+
+test("init refuses a repo directory that does not exist", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-init-missing-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const missing = join(tempDir, "no-clonado");
+  await assert.rejects(execFileAsync(process.execPath, [runnerPath, "init", missing, "--repo", "org/repo"]), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /no existe/);
+    return true;
+  });
+  assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
 });
