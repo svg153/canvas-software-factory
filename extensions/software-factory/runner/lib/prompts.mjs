@@ -69,7 +69,7 @@ pero TÚ MISMO respondes cada objeción y cierras con la opción recomendada.
 Lectura: ${p.plan} y ${p.draft}.
 
 Por cada decisión relevante del plan:
-1. Objeción (qué puede salir mal / qué假设 es frágil).
+1. Objeción (qué puede salir mal / qué supuesto es frágil).
 2. Respuesta recomendada y por qué gana.
 3. Ajuste concreto al plan si procede.
 

@@ -38,6 +38,9 @@ export async function createIssuesFromDraft(state, {
   const draft = JSON.parse(draftRaw);
   const existing = new Set(state.issues.map((i) => i.title));
   const created = [];
+  // Numeración dry-run única dentro del state: continúa del mayor número ya usado
+  // (cada ronda persiste en el mismo state; 900+created.length colisionaría entre rondas).
+  let nextFakeNumber = state.issues.reduce((max, i) => Math.max(max, Number(i.number) || 0), 900);
 
   for (const it of draft.issues || []) {
     if (!it?.title || existing.has(it.title)) continue;
@@ -50,7 +53,7 @@ export async function createIssuesFromDraft(state, {
       ...labels,
     ];
     if (dryRun) {
-      const fake = { title: it.title, url: "(dry-run)", number: 900 + created.length + 1 };
+      const fake = { title: it.title, url: "(dry-run)", number: ++nextFakeNumber };
       created.push(fake);
       state.issues.push({ ...fake, at: new Date().toISOString() });
       continue;

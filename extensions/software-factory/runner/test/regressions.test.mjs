@@ -11,7 +11,7 @@ import { createFactoryServer } from "../lib/http.mjs";
 import { createIssuesFromDraft, projectItemAddArgs } from "../lib/gh.mjs";
 import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, loadState, saveState } from "../lib/state.mjs";
-import { bootstrapPrompt, discoverPrompt } from "../lib/prompts.mjs";
+import { bootstrapPrompt, discoverPrompt, grillPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
 import { buildCanvasManifest } from "../../../../tools/make-canvas-manifest.mjs";
 
@@ -507,4 +507,57 @@ test("extension play guards a done factory via the shared startGuardError", asyn
   const extSource = await readFile(join(extensionDir, "extension.mjs"), "utf8");
   assert.match(extSource, /startGuardError/);
   assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
+});
+
+test("multi-round CLI dry-run keeps issue numbers unique and claims new round-2 issues", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-multi-round-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "2");
+  await run("start", repo);
+  const draftFile = join(repo, ".software-factory", "issues-draft.json");
+  await writeFile(draftFile, JSON.stringify({ issues: [{ title: "Alpha" }, { title: "Beta" }] }));
+
+  let out = JSON.parse((await run("next", repo, "--dry")).stdout);
+  let iterations = 0;
+  let injectedRound2 = false;
+  while (out.status === "running" && iterations++ < 60) {
+    for (const task of out.tasks || []) await run("complete", repo, task.id);
+    if (!injectedRound2 && out.phase === "discover" && out.round === 2) {
+      // Issue nueva en ronda 2: no debe reutilizar los números de la ronda 1.
+      await writeFile(draftFile, JSON.stringify({
+        issues: [{ title: "Alpha" }, { title: "Beta" }, { title: "Gamma" }],
+      }));
+      injectedRound2 = true;
+    }
+    out = JSON.parse((await run("next", repo, "--dry")).stdout);
+  }
+  assert.equal(out.status, "done", `la fábrica debía terminar, quedó ${out.status}`);
+  assert.ok(injectedRound2, "el ciclo debe haber alcanzado la ronda 2");
+
+  const state = await loadState(repo);
+  const numbers = state.issues.map((i) => i.number);
+  assert.deepEqual(numbers, [901, 902, 903], "los números dry-run deben ser únicos entre rondas");
+  assert.equal(new Set(numbers).size, numbers.length);
+
+  const r1 = state.tasks.filter((task) => task.phase === "implement" && task.round === 1);
+  const r2 = state.tasks.filter((task) => task.phase === "implement" && task.round === 2);
+  assert.equal(r1.length, 2, "ronda 1: Alpha y Beta");
+  assert.equal(r2.length, 1, "ronda 2: solo Gamma, sin repetir Alpha/Beta");
+  assert.match(r2[0].title, /Gamma/);
+  assert.equal(r2[0].issue?.number ?? r2[0].issue?.number, 903, "Gamma no debe colisionar con Alpha (901)");
+
+  const gammaOrder = await readFile(r2[0].prompt_file, "utf8");
+  assert.match(gammaOrder, /# Implementar issue #903 — Gamma/);
+  assert.doesNotMatch(gammaOrder, /Alpha|Beta/, "el work order de Gamma no debe repetir otras issues");
+});
+
+test("grill prompt is fully Spanish (no CJK glyphs)", async () => {
+  const src = await readFile(join(extensionDir, "runner", "lib", "prompts.mjs"), "utf8");
+  assert.doesNotMatch(src, /[\u3400-\u9FFF\u3000-\u303F\uFF00-\uFFEF]/, "prompts.mjs no debe contener caracteres CJK");
+  const text = grillPrompt({ repo_path: "C:\\repos\\demo" }, { round: 1, id: "r1-grill-01" });
+  assert.match(text, /qué supuesto es frágil/);
 });
