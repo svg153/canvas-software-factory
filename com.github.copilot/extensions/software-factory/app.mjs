@@ -27,6 +27,30 @@ async function action(actionName, input = {}) {
 
 document.getElementById("play").onclick = () => action("play");
 document.getElementById("pause").onclick = () => action("pause");
+document.getElementById("detectBtn").onclick = () => autofill();
+
+// #82/#83: rellena owner/repo desde el remote origin y el Project vinculado al repo.
+async function autofill() {
+  const result = await action("autofill");
+  if (result.error) return result;
+  if (result.github_repo) {
+    document.getElementById("ghrepo").value = result.github_repo;
+    log(`owner/repo detectado: ${result.github_repo}`);
+  } else {
+    log(`owner/repo: ${result.note || "sin detectar"} — escríbelo a mano si hace falta`);
+  }
+  const projects = result.projects || [];
+  if (projects.length === 1) {
+    document.getElementById("project").value = String(projects[0].number);
+    document.getElementById("projectOwner").value = projects[0].owner || "";
+    log(`Project detectado: #${projects[0].number} «${projects[0].title}»`);
+  } else if (projects.length > 1) {
+    log(`varios Projects: ${projects.map((p) => `#${p.number} ${p.title}`).join(", ")} — escribe el nº que quieras usar`);
+  } else if (result.github_repo) {
+    log(result.note ? `Project sin detectar: ${result.note}` : "el repo no tiene ningún Project vinculado; deja el campo vacío");
+  }
+  return result;
+}
 document.getElementById("initBtn").onclick = () => action("init", createInitPayload({
   repo: document.getElementById("ghrepo").value,
   project: document.getElementById("project").value,
@@ -64,11 +88,22 @@ document.getElementById("setRepo").onclick = async () => {
   try {
     await loadRepo();
     log(`repo asignado: ${value}`);
+    await autofillOnSet();
   } catch (error) {
     repo = prev;
     log(`error: ${error.message}`);
   }
 };
+
+// Al asignar un repo, rellenar owner/repo (y Project) salvo que el usuario haya
+// editado el campo a mano: solo sobrescribimos vacío o nuestro propio valor previo.
+let autoFilledRepo = "";
+async function autofillOnSet() {
+  const gh = document.getElementById("ghrepo");
+  if (gh.value && gh.value !== autoFilledRepo) return;
+  const result = await autofill();
+  if (result.github_repo) autoFilledRepo = result.github_repo;
+}
 
 try {
   await loadRepo();

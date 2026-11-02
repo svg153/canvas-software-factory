@@ -175,6 +175,32 @@ test("app.mjs: respuesta con error y fallo de fetch inicial se registran en el l
   assert.equal(down.sources.length, 0);
 });
 
+test("app.mjs: setRepo autodetecta owner/repo y Project (#82/#83)", async () => {
+  const { els, calls } = await runApp({
+    fetchImpl: async (url, opts) => {
+      if (url.startsWith("/action")) {
+        const body = JSON.parse(opts.body);
+        if (body.actionName === "autofill") {
+          return { json: async () => ({ status: "autofill", github_repo: "o/r", projects: [{ number: 5, title: "Board", owner: "me" }] }) };
+        }
+        return { json: async () => ({ status: "ok" }) };
+      }
+      return { json: async () => ({ status: "running", phase: "plan" }) };
+    },
+  });
+  els.repoInput = { value: "C:\\x" };
+  await els.setRepo.onclick();
+  assert.equal(els.ghrepo.value, "o/r");
+  assert.equal(els.project.value, "5");
+  assert.equal(els.projectOwner.value, "me");
+  // Edición manual: no se pisa en siguientes «Usar repo».
+  els.ghrepo.value = "manual/x";
+  await els.setRepo.onclick();
+  assert.equal(els.ghrepo.value, "manual/x");
+  const autofills = calls.filter((c) => c.url.startsWith("/action") && JSON.parse(c.opts.body).actionName === "autofill");
+  assert.equal(autofills.length, 1);
+});
+
 test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas", () => {
   const src = read("extension.mjs");
   for (const name of ["get_state", "play", "pause", "init_factory", "next_work"]) {
