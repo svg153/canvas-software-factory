@@ -44,6 +44,10 @@ test("projectsV2Args construye la consulta graphql y valida el slug", () => {
   assert.deepEqual(args.slice(0, 6), ["api", "graphql", "-f", "owner=o", "-f", "name=r"]);
   assert.ok(args.at(-1).startsWith("query="));
   assert.match(args.at(-1), /projectsV2/);
+  // ProjectV2Owner es unión: login debe pedirse via inline fragments, no directo.
+  assert.match(args.at(-1), /\.\.\. on User \{ login \}/);
+  assert.match(args.at(-1), /\.\.\. on Organization \{ login \}/);
+  assert.ok(!/owner\{\s*login\s*\}/.test(args.at(-1)));
   assert.throws(() => projectsV2Args("bad slug"), /inválido/);
   assert.throws(() => projectsV2Args("o/-r"), /inválido/);
 });

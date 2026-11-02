@@ -35,8 +35,10 @@ export function validateInitInputs({ repo = "", project = "", projectOwner = "" 
 }
 
 // Detección del Project enlazado al repo (#83) vía GraphQL projectsV2.
+// ProjectV2Owner es una unión (User|Organization|Team): `login` solo existe en los
+// fragments, no en la unión — pedirlo directo devuelve undefinedField y gh sale con error.
 const PROJECTS_V2_QUERY =
-  "query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ projectsV2(first:10){ nodes{ number title owner{ login } } } } }";
+  "query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ projectsV2(first:10){ nodes{ number title owner{ __typename ... on User { login } ... on Organization { login } } } } } }";
 
 export function projectsV2Args(slug) {
   if (typeof slug !== "string" || !REPO_RE.test(slug) || slug.split("/")[1].startsWith("-")) {
