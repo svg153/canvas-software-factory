@@ -75,7 +75,7 @@ and copy `skills/software-factory/` to `<COPILOT_HOME>/skills/software-factory/`
 
 **Option C — awesome-copilot:** once accepted as an external plugin, install it from
 the catalog with one click. To propose it, open an external-plugin submission issue in
-`github/awesome-copilot` pointing at a release tag + commit SHA of this repo.
+`github/awesome-copilot` pointing at the release tag `v0.1.1` and the commit SHA it resolves to (`git rev-parse v0.1.1^{commit}`).
 
 ## Use
 
