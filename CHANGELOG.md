@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.4
+
+### Fixed
+- «Detectar»/autofill del Project (#83): la consulta GraphQL pedía `owner { login }`
+  directamente sobre `ProjectV2Owner`, que es una unión (`User | Organization | Team`)
+  sin ese campo; GitHub respondía `undefinedField` y `gh` fallaba. Ahora `login` se
+  pide con inline fragments (`... on User`, `... on Organization`), como exige la API.
+
 ## v0.1.3
 
 ### Added
