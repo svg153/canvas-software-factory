@@ -16,7 +16,13 @@
 //    validador JSON Schema completo: cualquier palabra del esquema no
 //    soportada se reporta como error (falla en abierto, nunca se ignora en
 //    silencio), así que una actualización del esquema oficial no puede pasar
-//    como "validado" sin ampliar este validador.
+//    como "validado" sin ampliar este validador. La auditoría de palabras
+//    recorre el ÁRBOL COMPLETO del esquema (properties/items/additionalProperties)
+//    con independencia de la instancia: una keyword desconocida en un campo
+//    opcional ausente también falla.
+//    En las comprobaciones de estructura, SOLO ENOENT cuenta como "archivo
+//    ausente"; cualquier otro error de lectura (EISDIR, EPERM, EACCES…) se
+//    propaga, porque tratarlo como ausencia silenciaría fallos reales.
 //
 // LIMITACIÓN: el gate oficial completo de awesome-copilot (y los requisitos
 // semánticos/operacionales adicionales de la especificación Agent Plugins)
@@ -32,9 +38,53 @@ const SUPPORTED_WORDS = new Set([
   "properties", "additionalProperties", "items", "pattern", "minLength", "maxLength",
 ]);
 
+// Auditoría del propio árbol del esquema, sin depender de la instancia:
+// recorre properties/items/additionalProperties y reporta cualquier palabra
+// no soportada (fail-closed: un campo opcional ausente no oculta keywords
+// desconocidas en su subschema).
+function auditSchema(schema, path) {
+  const errors = [];
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    errors.push(`${path}: esquema no soportado por el validador mínimo (debe ser un objeto)`);
+    return errors;
+  }
+  for (const word of Object.keys(schema)) {
+    if (!SUPPORTED_WORDS.has(word)) {
+      errors.push(`${path}: palabra de esquema '${word}' no soportada por el validador mínimo (ampliarlo o revisar el esquema)`);
+    }
+  }
+  for (const [k, sub] of Object.entries(schema.properties ?? {})) {
+    errors.push(...auditSchema(sub, `${path}.properties.${k}`));
+  }
+  if ("items" in schema) {
+    const items = schema.items;
+    if (items && typeof items === "object" && !Array.isArray(items)) {
+      errors.push(...auditSchema(items, `${path}.items`));
+    } else {
+      errors.push(`${path}.items: esquema de array no soportado por el validador mínimo`);
+    }
+  }
+  if ("additionalProperties" in schema) {
+    const ap = schema.additionalProperties;
+    if (ap === true || ap === false) {
+      // admitidas por el validador mínimo
+    } else if (ap && typeof ap === "object" && !Array.isArray(ap)) {
+      errors.push(...auditSchema(ap, `${path}.additionalProperties`));
+    } else {
+      errors.push(`${path}.additionalProperties: valor no soportado por el validador mínimo`);
+    }
+  }
+  return errors;
+}
+
 // Validador mínimo JSON Schema (solo las palabras del esquema vendido; ver
-// comentario de cabecera). Devuelve una lista de errores legibles.
+// comentario de cabecera). Devuelve una lista de errores legibles: primero la
+// auditoría completa del esquema y luego la validación de la instancia.
 export function validateAgainstSchema(value, schema, path = "$") {
+  return [...auditSchema(schema, path), ...validateInstance(value, schema, path)];
+}
+
+function validateInstance(value, schema, path) {
   const errors = [];
   const fail = (msg) => errors.push(`${path}: ${msg}`);
 
@@ -52,7 +102,7 @@ export function validateAgainstSchema(value, schema, path = "$") {
   }
 
   if (Array.isArray(value) && schema.items) {
-    value.forEach((item, i) => errors.push(...validateAgainstSchema(item, schema.items, `${path}[${i}]`)));
+    value.forEach((item, i) => errors.push(...validateInstance(item, schema.items, `${path}[${i}]`)));
   }
 
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -61,24 +111,19 @@ export function validateAgainstSchema(value, schema, path = "$") {
     }
     const known = new Set(Object.keys(schema.properties ?? {}));
     for (const [k, sub] of Object.entries(schema.properties ?? {})) {
-      if (k in value) errors.push(...validateAgainstSchema(value[k], sub, `${path}.${k}`));
+      if (k in value) errors.push(...validateInstance(value[k], sub, `${path}.${k}`));
     }
     if ("additionalProperties" in schema) {
       for (const k of Object.keys(value)) {
         if (known.has(k)) continue;
         const ap = schema.additionalProperties;
         if (ap === false) fail(`campo no permitido '${k}'`);
-        else if (ap && typeof ap === "object") errors.push(...validateAgainstSchema(value[k], ap, `${path}.${k}`));
+        else if (ap && typeof ap === "object") errors.push(...validateInstance(value[k], ap, `${path}.${k}`));
         else fail("additionalProperties con valor no soportado por el validador mínimo");
       }
     }
   }
 
-  for (const word of Object.keys(schema)) {
-    if (!SUPPORTED_WORDS.has(word)) {
-      fail(`palabra de esquema '${word}' no soportada por el validador mínimo (ampliarlo o revisar el esquema)`);
-    }
-  }
   return errors;
 }
 
@@ -106,30 +151,48 @@ export async function checkExternalLayout(repoRoot) {
 
   const id = "software-factory";
   const nsDir = join(repoRoot, "com.github.copilot", "extensions", id);
-  try { await readFile(join(nsDir, "extension.mjs")); } catch { errors.push(`falta ${id}/extension.mjs en com.github.copilot/extensions/`); }
+  // Solo ENOENT cuenta como ausencia; otros errores de lectura se propagan
+  // (silenciar EISDIR/EPERM/EACCES convertiría un fallo real en "no existe").
+  const readOrAbsence = async (file) => {
+    try {
+      return { data: await readFile(file), missing: false };
+    } catch (error) {
+      if (error?.code === "ENOENT") return { data: null, missing: true };
+      throw error;
+    }
+  };
+
+  if ((await readOrAbsence(join(nsDir, "extension.mjs"))).missing) {
+    errors.push(`falta ${id}/extension.mjs en com.github.copilot/extensions/`);
+  }
 
   // Fuente canónica única: no debe quedar una segunda copia en la antigua ruta raíz.
-  try {
-    await readFile(join(repoRoot, "extensions", id, "extension.mjs"));
+  if (!(await readOrAbsence(join(repoRoot, "extensions", id, "extension.mjs"))).missing) {
     errors.push("existe una copia duplicada de la extensión en extensions/ (sin namespace)");
-  } catch { /* correcto: no existe */ }
+  }
 
   // El árbol distribuido no versiona canvas.json (se genera en el destino).
-  try {
-    await readFile(join(nsDir, "canvas.json"));
+  if (!(await readOrAbsence(join(nsDir, "canvas.json"))).missing) {
     errors.push("canvas.json no debe estar versionado en el árbol de la extensión");
-  } catch { /* correcto */ }
+  }
 
   // Skills por convención Agent Plugins 1.0: skills/<id>/SKILL.md en la raíz del paquete.
-  try { await readFile(join(repoRoot, "skills", id, "SKILL.md")); }
-  catch { errors.push("falta skills/software-factory/SKILL.md en la raíz del paquete"); }
+  if ((await readOrAbsence(join(repoRoot, "skills", id, "SKILL.md"))).missing) {
+    errors.push("falta skills/software-factory/SKILL.md en la raíz del paquete");
+  }
 
   return errors;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const repoRoot = process.argv[2] ?? process.cwd();
-  const errors = await checkExternalLayout(repoRoot);
+  let errors;
+  try {
+    errors = await checkExternalLayout(repoRoot);
+  } catch (error) {
+    console.error(`Comprobación parcial de layout/manifest abortada por un error de lectura (no es ausencia): ${error.message}`);
+    process.exit(1);
+  }
   if (errors.length) {
     console.error("Comprobación parcial de layout/manifest fallida:");
     for (const error of errors) console.error(`  - ${error}`);

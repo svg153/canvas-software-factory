@@ -469,6 +469,46 @@ test("the vendored schema validator rejects manifests the old key-list check wou
   assert.ok(validateAgainstSchema(good, { type: "object", unknownKeyword: true }, "$").some((e) => /no soportada/.test(e)), "palabras no soportadas fallan en abierto");
 });
 
+test("schema audit visits the whole tree even when the instance omits the field", () => {
+  // Regresión: antes properties[k] solo se visitaba si k estaba en la instancia
+  // e items solo si habia elementos, asi que una keyword desconocida en un campo
+  // opcional ausente pasaba inadvertida (contradecía el fallo cerrado).
+  const schema = {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      optional: { type: "string", deprecated: true },
+      tags: { type: "array", items: { type: "string", unevaluatedItems: false } },
+    },
+  };
+  const errors = validateAgainstSchema({ name: "ok", tags: [] }, schema, "$");
+  assert.ok(errors.some((e) => e.includes("properties.optional: palabra de esquema 'deprecated' no soportada")),
+    "keyword desconocida en un campo opcional AUSENTE debe fallar");
+  assert.ok(errors.some((e) => e.includes("properties.tags.items: palabra de esquema 'unevaluatedItems' no soportada")),
+    "keyword desconocida en items de un array VACIO debe fallar");
+  assert.ok(!errors.some((e) => /'type'|'properties'|'items'/.test(e)), "sin falsos positivos sobre palabras soportadas");
+});
+
+test("layout check treats only ENOENT as absence and propagates other read errors", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "sf-layout-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const manifest = JSON.parse(await readFile(join(repoRoot, "plugin.json"), "utf8"));
+  await writeFile(join(dir, "plugin.json"), JSON.stringify(manifest));
+
+  // Ausencia real (ENOENT): se reporta como error de layout, sin lanzar.
+  const missing = await checkExternalLayout(dir);
+  assert.ok(missing.some((e) => /falta software-factory\/extension\.mjs/.test(e)), "ENOENT se reporta como ausencia");
+  assert.ok(missing.some((e) => /falta skills\/software-factory\/SKILL\.md/.test(e)), "SKILL.md ausente se reporta como ausencia");
+
+  // extension.mjs como DIRECTORIO: lectura falla con EISDIR/EPERM, no es
+  // ausencia; debe propagarse en lugar de contarse como error de layout.
+  await mkdir(join(dir, "com.github.copilot", "extensions", "software-factory", "extension.mjs"), { recursive: true });
+  await assert.rejects(checkExternalLayout(dir), (error) => {
+    assert.ok(["EISDIR", "EPERM", "ENOTDIR"].includes(error.code), `se esperaba un error de lectura propagado, recibido ${error.code}`);
+    return true;
+  }, "un error de lectura que no es ENOENT debe propagarse");
+});
+
 test("vendored schema ships its Apache-2.0 license copy and third-party notice", async () => {
   // Cumplimiento de licencia antes de publicar: el esquema vendido es Apache-2.0
   // (agentplugins/agent-plugins-spec); su copia y el aviso de terceros deben
