@@ -9,7 +9,10 @@ async function gh(args) {
   // El criterio de error es SOLO el exit code: execFile rechaza si != 0 (stderr
   // incluido en el error). Scannear stderr con /error|could not|failed/ falsaba
   // con avisos legítimos de gh (p. ej. "warning: ... failed to check for updates").
-  // SF_FAKE_GH permite pruebas e2e con un gh falso (script Node) sin tocar GitHub.
+  // SF_FAKE_GH es un hook de simulación DOCUMENTADO (README "Runner contract"),
+  // no una puerta oculta: si está activo, toda creación se marca simulated:true
+  // en state y output, y events.log lo registra como SIMULADO. Para tests
+  // unitarios se prefiere la inyección runGh de createIssuesFromDraft.
   const fake = process.env.SF_FAKE_GH;
   const [cmd, base] = fake ? [process.execPath, [fake]] : ["gh", []];
   const { stdout } = await run(cmd, [...base, ...args], {
@@ -18,6 +21,8 @@ async function gh(args) {
   });
   return stdout.trim();
 }
+
+export const ghSimulationActive = () => Boolean(process.env.SF_FAKE_GH);
 
 export function projectItemAddArgs(state, url) {
   const owner = state.project_owner || state.repo?.split("/")[0];
@@ -58,12 +63,17 @@ export async function createIssuesFromDraft(state, {
   // accionable inmediato, nunca operación sobre el cwd del runner.
   if (pending.length > 0) repoSlug(state);
   const created = [];
+  // Una simulación SF_FAKE_GH nunca debe informarse como creación real: se marca.
+  const simulated = runGh === gh && ghSimulationActive();
   // Numeración ficticia continúa del mayor número ya presente en el state (real o
   // sembrada por pruebas) para no solaparse con issues existentes.
   let nextFakeNumber = state.issues.reduce((max, i) => Math.max(max, Number(i.number) || 0), 900);
 
   for (const it of draft.issues || []) {
     if (!it?.title || existing.has(it.title)) continue;
+    // Deduplicación DENTRO de la invocación (dry y real): dos títulos iguales en el
+    // mismo draft se procesan una sola vez, no solo contra lo ya persistido.
+    existing.add(it.title);
     const labels = (it.labels || []).flatMap((l) => ["--label", l]);
     const args = [
       "issue", "create",
@@ -86,8 +96,11 @@ export async function createIssuesFromDraft(state, {
     if (!Number.isFinite(number)) {
       throw new Error(`salida de gh issue create no utilizable para "${it.title}": ${JSON.stringify(url.slice(0, 200))}`);
     }
-    created.push({ title: it.title, url, number });
-    state.issues.push({ title: it.title, url, number, at: new Date().toISOString() });
+    created.push({ title: it.title, url, number, ...(simulated ? { simulated: true } : {}) });
+    state.issues.push({
+      title: it.title, url, number, at: new Date().toISOString(),
+      ...(simulated ? { simulated: true } : {}),
+    });
     await persistState();
     await logAndAdd(state, url, runGh);
     await persistState();

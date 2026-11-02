@@ -607,6 +607,8 @@ test("multi-round CLI with fake gh keeps issue numbers unique and claims only ne
   const numbers = state.issues.map((i) => i.number);
   assert.deepEqual(numbers, [1, 2, 3], "gh falso creó 3 issues reales, únicos entre rondas");
   assert.equal(new Set(numbers).size, numbers.length);
+  assert.ok(state.issues.every((i) => i.simulated === true),
+    "con SF_FAKE_GH las entradas se marcan simulated:true, nunca se informan como creación real");
 
   const creates = (await ghCalls(join(tempDir, "gh-calls.log")))
     .filter((a) => a[0] === "issue" && a[1] === "create");
@@ -624,7 +626,7 @@ test("multi-round CLI with fake gh keeps issue numbers unique and claims only ne
   assert.doesNotMatch(gammaOrder, /Alpha|Beta/, "el work order de Gamma no debe repetir otras issues");
 });
 
-test("dry-run never calls gh nor pollutes state; the later real run still creates the same issues", async (t) => {
+test("dry-run never advances nor touches production state; the real run afterwards creates issues exactly once", async (t) => {
   const tempDir = await mkdtemp(join(tmpdir(), "sf-dry-purity-"));
   t.after(() => rm(tempDir, { recursive: true, force: true }));
   const repo = join(tempDir, "repo");
@@ -638,29 +640,95 @@ test("dry-run never calls gh nor pollutes state; the later real run still create
   const draftFile = join(repo, ".software-factory", "issues-draft.json");
   await writeFile(draftFile, JSON.stringify({ issues: [{ title: "Alpha" }, { title: "Beta" }] }));
 
-  // Ciclo completo en simulación con la forma larga --dry-run (antes "next" la ignoraba).
-  let out = JSON.parse((await run("next", repo, "--dry-run")).stdout);
+  // Ciclo real hasta agotar grill (la fase issues se cruza sola dentro de un next real).
+  let out = JSON.parse((await run("next", repo)).stdout);
   let iterations = 0;
-  while (out.status === "running" && iterations++ < 40) {
+  while (out.phase !== "grill" && out.status === "running" && iterations++ < 20) {
     for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
-    out = JSON.parse((await run("next", repo, "--dry-run")).stdout);
+    out = JSON.parse((await run("next", repo)).stdout);
   }
-  assert.equal(out.status, "done");
-  assert.deepEqual(await ghCalls(logPath), [], "dry-run no debe invocar gh nunca");
-  const dryState = await loadState(repo);
-  assert.deepEqual(dryState.issues, [], "dry-run no contamina state.issues");
-  const events = await readFile(join(repo, ".software-factory", "events.log"), "utf8");
-  assert.match(events, /issues phase: 2 issues \(dry-run\)/);
+  assert.equal(out.phase, "grill", "el ciclo real debe llegar a grill");
+  for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+  // Un advance explícito deja la fábrica justo en la fase issues, sin crear nada.
+  await run("advance", repo);
+  assert.equal((await loadState(repo)).phase, "issues", "la fábrica debe quedar plantada en la fase issues");
+  assert.deepEqual(await ghCalls(logPath), [], "llegar a issues no invoca gh");
 
-  // Ejecución real posterior: los títulos del dry deben crearse igual (no omitirse por título).
-  await run("init", repo, "--repo", "org/repo", "--rounds", "1", "--force");
-  await run("start", repo);
-  const issuesOut = JSON.parse((await run("issues", repo)).stdout);
-  assert.equal(issuesOut.created, 2, "la ejecución real crea las 2 issues pese al dry previo");
-  assert.deepEqual(issuesOut.urls.map((u) => u.number), [1, 2],
-    "los números reales los pone gh; los ficticios del dry (901+) nunca se persistieron");
+  const stateFile = join(repo, ".software-factory", "state.json");
+  const eventsFile = join(repo, ".software-factory", "events.log");
+  const stateBefore = await readFile(stateFile, "utf8");
+  const eventsBefore = await readFile(eventsFile, "utf8");
+
+  // next --dry-run: previsualización explícita sin tocar producción.
+  const dryNext = JSON.parse((await run("next", repo, "--dry-run")).stdout);
+  assert.equal(dryNext.dry_run, true);
+  assert.equal(dryNext.phase, "issues", "next --dry-run no avanza la fase real");
+  assert.equal(dryNext.advance.dryRun, true);
+  assert.equal(dryNext.advance.to, "implement", "la preview muestra el avance que haría");
+  assert.deepEqual(dryNext.advance.issues.map((i) => i.title), ["Alpha", "Beta"]);
+  assert.ok(dryNext.advance.issues.every((i) => i.dry === true), "preview marcada dry:true");
+  assert.deepEqual(dryNext.advance.issues.map((i) => i.number), [901, 902], "números ficticios 901+");
+  assert.equal(await readFile(stateFile, "utf8"), stateBefore, "next --dry-run no escribe state.json");
+  assert.equal(await readFile(eventsFile, "utf8"), eventsBefore, "next --dry-run no escribe events.log");
+
+  // advance --dry: mismo contrato de pureza.
+  const dryAdv = JSON.parse((await run("advance", repo, "--dry")).stdout);
+  assert.equal(dryAdv.dryRun, true);
+  assert.equal(dryAdv.from, "issues");
+  assert.equal(dryAdv.to, "implement");
+  assert.equal(dryAdv.issues.length, 2, "advance --dry devuelve la previsualización explícita");
+  assert.equal(await readFile(stateFile, "utf8"), stateBefore, "advance --dry no escribe state.json");
+  assert.deepEqual(await ghCalls(logPath), [], "la simulación no invoca gh nunca");
+  assert.deepEqual((await loadState(repo)).issues, [], "la simulación no contamina state.issues");
+
+  // Continuación en modo real: cada issue se crea exactamente una vez y la fase avanza.
+  const realOut = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(realOut.phase, "implement", "la ejecución real sí avanza la fase");
+  const creates = (await ghCalls(logPath)).filter((a) => a[0] === "issue" && a[1] === "create");
+  assert.equal(creates.length, 2, "las issues del draft se crean exactamente una vez");
+  assert.deepEqual(creates.map((a) => a[a.indexOf("--title") + 1]).sort(), ["Alpha", "Beta"]);
   const realState = await loadState(repo);
   assert.deepEqual(realState.issues.map((i) => i.title).sort(), ["Alpha", "Beta"]);
+  assert.ok(realState.issues.every((i) => i.simulated === true), "SF_FAKE_GH activo: se marcan como simuladas");
+  const eventsAfter = await readFile(eventsFile, "utf8");
+  assert.match(eventsAfter, /issues phase: 2 issues \(SIMULADO SF_FAKE_GH\)/);
+  assert.doesNotMatch(eventsBefore, /issues phase/, "la simulación no dejó rastro en events.log");
+
+  // Segunda pasada real: no duplica creaciones.
+  await run("next", repo);
+  const creates2 = (await ghCalls(logPath)).filter((a) => a[0] === "issue" && a[1] === "create");
+  assert.equal(creates2.length, 2, "una segunda pasada no duplica las issues");
+});
+
+test("duplicate titles within one draft are created once (real) and previewed once (dry)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-dup-draft-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const fake = await writeFakeGh(tempDir);
+  const logPath = join(tempDir, "gh-calls.log");
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
+
+  await run("init", repo, "--repo", "org/repo");
+  const draftFile = join(repo, ".software-factory", "issues-draft.json");
+  await writeFile(draftFile, JSON.stringify({ issues: [{ title: "Alpha" }, { title: "Alpha" }, { title: "Beta" }] }));
+
+  // dry: la preview queda deduplicada dentro de la misma invocación.
+  const dryOut = JSON.parse((await run("issues", repo, "--dry")).stdout);
+  assert.equal(dryOut.created, 2, "Alpha duplicado se previsualiza una sola vez");
+  assert.deepEqual(dryOut.urls.map((u) => u.title), ["Alpha", "Beta"]);
+  assert.ok(dryOut.urls.every((u) => u.dry === true));
+  assert.deepEqual((await loadState(repo)).issues, [], "el dry no escribe state.issues");
+  assert.deepEqual(await ghCalls(logPath), [], "el dry no invoca gh");
+
+  // real: gh se llama una vez por título único; sin duplicados persistidos.
+  const realOut = JSON.parse((await run("issues", repo)).stdout);
+  assert.equal(realOut.created, 2);
+  assert.deepEqual(realOut.urls.map((u) => u.number), [1, 2]);
+  const creates = (await ghCalls(logPath)).filter((a) => a[0] === "issue" && a[1] === "create");
+  assert.equal(creates.length, 2, "el título repetido no genera una segunda creación");
+  const state = await loadState(repo);
+  assert.deepEqual(state.issues.map((i) => i.title), ["Alpha", "Beta"]);
 });
 
 test("init refuses to overwrite existing or corrupt state without --force", async (t) => {

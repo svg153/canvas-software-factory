@@ -79,11 +79,17 @@ repo with `--force` (see contract below).
   exists (even corrupt), `init` refuses and exits 1 with the current progress.
   `--force` is the explicit, destructive reset. The canvas follows the same path,
   so a Play on an existing factory cannot wipe its progress by accident.
-- **Simulation is safe.** `--dry` and `--dry-run` are equivalent on every command.
-  Dry runs never call `gh` and never write to `state.issues` — fictitious issues
-  appear only in the command output (marked `dry: true`, numbered from 901 upward
-  without colliding with real ones). A later real run therefore still creates the
-  same draft titles instead of skipping them.
+- **Simulation is fully isolated.** `--dry` and `--dry-run` are equivalent on every
+  command. Dry runs operate on an in-memory clone: they never call `gh`, never touch
+  `state.json`, `events.log` or work-order files, and never advance the real phase.
+  `next`/`advance` in dry mode return an explicit preview (`dry_run: true` plus an
+  `advance` object with the transition that *would* happen; preview issues are marked
+  `dry: true` and numbered from 901 upward without colliding with real ones). The
+  later real run therefore still creates the same draft titles exactly once.
+- **Duplicate titles inside one draft are created once.** `createIssuesFromDraft`
+  de-duplicates by title within a single invocation as well as against already
+  persisted issues, in both dry and real mode, while still persisting after each
+  creation for partial-failure recovery.
 - **`complete <taskId>` requires the report.** Closing a task as `done` demands the
   result file written by the agent (`results/<id>.md`); otherwise it exits 1.
   `--force` closes without the report as the explicit alternative; `--fail` marks
@@ -100,9 +106,14 @@ repo with `--force` (see contract below).
 - **`state.json` is written atomically** (unique temp file + rename): a crash mid
   write leaves the previous state intact. It does not protect against concurrent
   lost updates; drive one factory per repo from one process at a time.
-- Testing hook: `SF_FAKE_GH=<script.mjs>` makes the runner invoke a Node script
-  instead of the real `gh` CLI (used by the regression suite; no real GitHub
-  access happens when it is set).
+- Simulation hook (documented, not hidden): `SF_FAKE_GH=<script.mjs>` makes the
+  runner invoke that Node script instead of the real `gh` CLI. It is read by
+  production code, so it only works on an explicit real (non-dry) run — the
+  regression suite uses it with a PATH-independent fake executable. Everything
+  created while it is active is marked `simulated: true` in `state.issues` and the
+  command output, and `events.log` records the run as `SIMULADO SF_FAKE_GH`, so a
+  simulation can never be mistaken for real GitHub creation. Unit tests should
+  prefer injecting `runGh` into `createIssuesFromDraft` instead.
 
 ## Privacy & security
 

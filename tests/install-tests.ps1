@@ -86,7 +86,8 @@ It "el generador produce un canvas.json valido cuyo main resuelve" {
     Assert-True (Test-Path $cpath) "no se genero canvas.json"
     $c = Get-Content $cpath -Raw | ConvertFrom-Json
     Assert-True ($c.id -eq "software-factory") "canvas.json id incorrecto: $($c.id)"
-    Assert-True ($c.main -and (Test-Path (Join-Path $RepoRoot "com.github.copilot\extensions\software-factory" $c.main))) "main no resuelve: $($c.main)"
+    $extDir = Join-Path $RepoRoot "com.github.copilot\extensions\software-factory"
+    Assert-True ($c.main -and (Test-Path (Join-Path $extDir $c.main))) "main no resuelve: $($c.main)"
   } finally { Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue }
 }
 It "canvas-meta.json, package.json y plugin.json declaran la misma version" {
