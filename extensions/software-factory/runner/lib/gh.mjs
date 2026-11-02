@@ -13,9 +13,23 @@ async function gh(args, opts = {}) {
   return stdout.trim();
 }
 
+export function projectItemAddArgs(state, url) {
+  const owner = state.project_owner || state.repo?.split("/")[0];
+  if (!owner) throw new Error("Project owner is required to add an issue to a project");
+  return [
+    "project", "item-add", state.project_id,
+    "--owner", owner,
+    "--url", url,
+  ];
+}
+
 // Create issues from the draft JSON and add them to the GitHub Project (if set).
 // Draft schema: { "issues": [ { title, body, labels: [..], number? } ] }
-export async function createIssuesFromDraft(state, { dryRun = false } = {}) {
+export async function createIssuesFromDraft(state, {
+  dryRun = false,
+  persistState = async () => {},
+  runGh = gh,
+} = {}) {
   const p = state.repo_path;
   const draftRaw = await readFile(
     `${p}/.software-factory/issues-draft.json`,
@@ -41,24 +55,22 @@ export async function createIssuesFromDraft(state, { dryRun = false } = {}) {
       state.issues.push({ ...fake, at: new Date().toISOString() });
       continue;
     }
-    const url = await gh(args);
+    const url = await runGh(args);
     const number = Number(url.split("/").pop());
     created.push({ title: it.title, url, number });
     state.issues.push({ title: it.title, url, number, at: new Date().toISOString() });
-    await logAndAdd(state, url);
+    await persistState();
+    await logAndAdd(state, url, runGh);
+    await persistState();
   }
   return created;
 }
 
-async function logAndAdd(state, url) {
+async function logAndAdd(state, url, runGh = gh) {
   if (!state.project_id || !url || url === "(dry-run)") return;
   const num = url.split("/").pop();
   try {
-    await gh([
-      "project", "item-add", state.project_id,
-      "--type", "issue",
-      "--id", num,
-    ]);
+    await runGh(projectItemAddArgs(state, url));
   } catch (e) {
     // Project add failures should not break the factory run; surface in note.
     state.notes = (state.notes || "") + `\nproject add failed for #${num}: ${e.message}`;

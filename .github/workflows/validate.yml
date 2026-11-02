@@ -1,0 +1,31 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run regression tests
+        run: npm test
+        working-directory: extensions/software-factory
+      - name: Check JavaScript syntax
+        run: find extensions/software-factory tools -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
+      - name: Validate manifests
+        run: node --input-type=module -e "import fs from 'node:fs'; for (const path of ['plugin.json', 'extensions/software-factory/package.json', 'canvas-meta.json']) JSON.parse(fs.readFileSync(path, 'utf8'))"
+      - name: Extension tree must not ship canvas.json
+        run: test ! -e extensions/software-factory/canvas.json
+      - name: Install-target canvas.json can be generated
+        run: |
+          mkdir -p "$RUNNER_TEMP/sf-ext"
+          node tools/make-canvas-manifest.mjs . "$RUNNER_TEMP/sf-ext"
+          node --input-type=module -e "import fs from 'node:fs'; const m = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/sf-ext/canvas.json', 'utf8')); if (m.id !== 'software-factory' || m.main !== 'extension.mjs') process.exit(1)"

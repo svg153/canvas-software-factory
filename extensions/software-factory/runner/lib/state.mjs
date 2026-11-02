@@ -26,6 +26,7 @@ export function defaultState(repoPath, opts = {}) {
     repo: opts.repo || "",
     repo_path: repoPath,
     project_id: opts.project || "",
+    project_owner: opts.projectOwner || opts.repo?.split("/")[0] || "",
     status: "idle", // idle | running | paused | done
     round: 1,
     max_rounds: Number(opts.rounds ?? 3),
@@ -66,6 +67,16 @@ export function taskById(state, id) {
 
 export function openTasks(state, phase = state.phase) {
   return state.tasks.filter((t) => t.phase === phase && t.status !== "done");
+}
+
+export function unclaimedIssues(state) {
+  const claimed = new Set(
+    state.tasks
+      .filter((task) => task.phase === "implement")
+      .map((task) => task.issue?.number || task.meta?.issue?.number)
+      .filter(Boolean),
+  );
+  return (state.issues || []).filter((issue) => issue.number && !claimed.has(issue.number));
 }
 
 let seq = 0;

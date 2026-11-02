@@ -18,7 +18,7 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 
 ## Requirements
 
-- Node 20+, `gh` CLI authenticated (issues/Project phase), a GitHub Project id if you
+- Node 20+, `gh` CLI authenticated (issues/Project phase), a GitHub Project number if you
   want issues enqueued (`gh project list`).
 - GitHub Copilot desktop app with canvas extensions enabled.
 
@@ -27,13 +27,21 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 **Option A — installer script (Windows):**
 
 ```powershell
-git clone https://github.com/svg153/software-factory.git
-cd software-factory
-./install.ps1        # copies canvas+runner to ~/.copilot/extensions/software-factory
+git clone https://github.com/svg153/canvas-software-factory.git
+cd canvas-software-factory
+.\install.ps1        # copies canvas+runner to ~/.copilot/extensions/software-factory
                      # and the skill to ~/.copilot/skills/software-factory
 ```
 
-Then reload extensions in the app (or restart it).
+The distributed extension tree deliberately ships **no** `canvas.json`: per the
+awesome-copilot convention for canvas extensions ("Extension website metadata is
+sourced from the matching plugin manifest"), `install.ps1` instead *generates*
+`canvas.json` in the install target from `canvas-meta.json` + `plugin.json` using
+`tools/make-canvas-manifest.mjs`. `plugin.json` at the repository root remains the
+marketplace manifest.
+Use the same command with `-Force` to replace an existing installation (your
+`<repo>/.software-factory/` state and any installed `artifacts/` are preserved),
+then reload extensions in the app (or restart it).
 
 **Option B — awesome-copilot:** once accepted as an external plugin, install it from
 the catalog with one click. To propose it, open an external-plugin submission issue in
@@ -44,7 +52,8 @@ the catalog with one click. To propose it, open an external-plugin submission is
 ```powershell
 # 1. One-time setup per repo
 node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
-  --repo owner/name --project <github-project-id> --rounds 3
+  --repo owner/name --project <project-number> --rounds 3
+# Add --project-owner <owner> if the Project belongs to a different owner
 
 # 2. Open the "Software Factory" canvas (pass repo=<absolute path> as input
 #    if the factory should target a repo other than the session workspace).
@@ -56,10 +65,25 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 ## Privacy & security
 
 - The plugin stores state **only** inside `<repo>/.software-factory/` (JSON + markdown).
-- It never reads, writes or sends credentials. All GitHub operations go through the
-  official `gh` CLI using *your* existing auth, with the permissions of *your* account.
+- The plugin code never reads, writes or sends credentials. All GitHub operations go
+  through the official `gh` CLI using *your* existing auth, with the permissions of
+  *your* account. Note, however, that work orders and result files are agent-written
+  text and may quote repository content: review them before committing anywhere. We
+  do not guarantee that no secret ever ends up in `.software-factory/`.
+- This repo's `.gitignore` covers this repo only. When the factory targets **another**
+  repo, `<repo>/.software-factory/` is *not* automatically ignored there — add it to
+  that repo's `.gitignore` (or delete the folder) before committing.
 - The canvas HTTP server binds to `127.0.0.1` on a random port (localhost-only UI).
-- `gh project item-add` failures are recorded in `state.notes`; they never leak output.
+- Project item-add failures are recorded in `state.notes`; issue creation can continue.
+- When a Project owner is not provided, the runner uses the owner from `--repo`.
+
+## Validate
+
+From `extensions/software-factory/`, run `npm test` to execute the built-in Node.js
+regression tests. The GitHub Actions workflow also checks the JavaScript syntax,
+validates the plugin, package and `canvas-meta.json` manifests, verifies the
+extension tree contains no `canvas.json`, and generates the install-target
+`canvas.json` with `tools/make-canvas-manifest.mjs` on pushes and pull requests.
 
 ## Repo layout notes
 

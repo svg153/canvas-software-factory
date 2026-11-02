@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 import {
   loadState, saveState, defaultState, logEvent, paths,
-  newTask, writeWorkOrder, openTasks, PHASES,
+  newTask, writeWorkOrder, openTasks, unclaimedIssues, PHASES,
 } from "./lib/state.mjs";
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
@@ -33,12 +33,7 @@ const phasePlan = {
   plan: (s) => [{ title: `Plan GSD round ${s.round}`, prompt: planPrompt }],
   grill: (s) => [{ title: `Grill-me al plan round ${s.round}`, prompt: grillPrompt }],
   implement: (s) => {
-    const claimed = new Set(
-      s.tasks.filter((t) => t.phase === "implement" && t.meta?.issue?.number)
-        .map((t) => t.meta.issue.number),
-    );
-    return (s.issues || [])
-      .filter((i) => i.number && !claimed.has(i.number))
+    return unclaimedIssues(s)
       .map((i) => ({
         title: `Implementar #${i.number} ${i.title}`,
         prompt: (st, t) => implementPrompt(st, t, i),
@@ -62,8 +57,9 @@ async function emitTasks(state) {
 async function cmdInit() {
   const repo = flags("repo") || "";
   const project = flags("project") || "";
+  const projectOwner = flags("project-owner") || "";
   const rounds = flags("rounds") || 3;
-  const state = defaultState(repoPath, { repo, project, rounds });
+  const state = defaultState(repoPath, { repo, project, projectOwner, rounds });
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
   console.log(JSON.stringify({ ok: true, sf: paths(repoPath).root, state: "idle" }, null, 2));
@@ -116,7 +112,10 @@ async function cmdNext() {
 async function advance(state) {
   const p = paths(state.repo_path);
   if (state.phase === "issues") {
-    const created = await createIssuesFromDraft(state, { dryRun: Boolean(flags("dry")) });
+    const created = await createIssuesFromDraft(state, {
+      dryRun: Boolean(flags("dry")),
+      persistState: () => saveState(state.repo_path, state),
+    });
     await logEvent(state.repo_path, `issues phase: ${created.length} issues`);
   }
   if (state.phase === "review") {
@@ -163,7 +162,10 @@ async function cmdSetStatus(next) {
 
 async function cmdIssues() {
   const state = need(await loadState(repoPath));
-  const created = await createIssuesFromDraft(state, { dryRun: Boolean(flags("dry-run")) });
+  const created = await createIssuesFromDraft(state, {
+    dryRun: Boolean(flags("dry-run")),
+    persistState: () => saveState(state.repo_path, state),
+  });
   await logEvent(repoPath, `issues manual: ${created.length}`);
   await saveState(repoPath, state);
   console.log(JSON.stringify({ ok: true, created: created.length, urls: created }, null, 2));
@@ -182,7 +184,7 @@ async function main() {
     default:
       console.log(`sf.mjs — Software Factory runner
 Comandos:
-  init <repo> --repo owner/repo [--project NNN] [--rounds 3]
+  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3]
   start|pause|status|next <repo>
   complete <repo> <taskId> [--fail]
   issues <repo> [--dry-run]   (crea issues del draft + añade al Project)

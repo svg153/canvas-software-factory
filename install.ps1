@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 $extSource = Join-Path $PSScriptRoot "extensions\software-factory"
 if (-not (Test-Path $extSource)) { throw "No se encuentra $extSource" }
+$artifactsBackup = $null
 
 $extTarget = Join-Path $CopilotHome "extensions\software-factory"
 if (Test-Path $extTarget) {
@@ -27,14 +28,30 @@ if (Test-Path $extTarget) {
   }
   # conserva artifacts/ si existiera
   $artifacts = Join-Path $extTarget "artifacts"
-  $backup = $null
-  if (Test-Path $artifacts) { $backup = Join-Path $env:TEMP "sf-artifacts-backup"; Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue; Copy-Item -Recurse $artifacts $backup }
+  if (Test-Path $artifacts) {
+    $artifactsBackup = Join-Path ([System.IO.Path]::GetTempPath()) ("sf-artifacts-backup-" + [guid]::NewGuid().ToString("N"))
+    Copy-Item -Recurse $artifacts $artifactsBackup
+  }
   Remove-Item -Recurse -Force $extTarget
 }
 
 New-Item -ItemType Directory -Force (Split-Path $extTarget) | Out-Null
 Copy-Item -Recurse $extSource $extTarget
-if ($backup) { Copy-Item -Recurse $backup (Join-Path $extTarget "artifacts") }
+if ($artifactsBackup) {
+  Copy-Item -Recurse $artifactsBackup (Join-Path $extTarget "artifacts")
+  Remove-Item -Recurse -Force $artifactsBackup
+}
+
+# El arbol distribuido no incluye canvas.json (convencion awesome-copilot:
+# la metadata del canvas procede del manifiesto del plugin). Se materializa
+# aqui, en el destino de instalacion, desde canvas-meta.json + plugin.json.
+$manifestTool = Join-Path $PSScriptRoot "tools\make-canvas-manifest.mjs"
+if (-not (Test-Path $manifestTool)) { throw "No se encuentra $manifestTool" }
+node $manifestTool $PSScriptRoot $extTarget
+if ($LASTEXITCODE -ne 0) { throw "Fallo la generacion de canvas.json (exit $LASTEXITCODE)" }
+$canvasManifest = Join-Path $extTarget "canvas.json"
+if (-not (Test-Path $canvasManifest)) { throw "No se genero $canvasManifest" }
+Get-Content $canvasManifest -Raw | ConvertFrom-Json | Out-Null
 
 $skillSource = Join-Path $PSScriptRoot "skills\software-factory"
 $skillTarget = Join-Path $CopilotHome "skills\software-factory"
