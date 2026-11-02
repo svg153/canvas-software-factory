@@ -1,6 +1,7 @@
 // Software Factory canvas — panel de control de la fábrica.
 // Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
 import { readFile } from "node:fs/promises";
+import { statSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +24,7 @@ function sfPaths(repoDir) {
 }
 
 async function readState(repoDir) {
+  if (!repoDir) return null;
   try {
     return JSON.parse(await readFile(sfPaths(repoDir).state, "utf8"));
   } catch {
@@ -48,6 +50,7 @@ function factoryPrompt(repoDir, state) {
 // cuando el repo se queda sin suscriptores (antes quedaba vivo para siempre).
 const watchers = new Map();
 function ensureWatch(repoDir) {
+  if (!repoDir) return;
   if (watchers.has(repoDir)) return;
   const timer = setInterval(async () => {
     if (!subscribers.get(repoDir)?.size) {
@@ -69,6 +72,12 @@ function broadcast(repoDir, state) {
 }
 
 async function applyAction(repoDir, actionName, input = {}) {
+  // El host de extensiones no es una sesión de chat: sin ?repo= válido el defaultRepo
+  // cae a un directorio cualquiera. Nunca escribamos estado de fábrica fuera de un git.
+  if (!repoIsGitWorkspace(repoDir)) {
+    throw new CanvasError("sf_repo_no_permitido",
+      "El panel no tiene un repo de trabajo. Escribe la ruta absoluta de tu workspace (git) en el campo «Repo» y pulsa «Usar repo».");
+  }
   if (actionName === "get_state") {
     const state = await readState(repoDir);
     return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, notes: state?.notes || "", runner: RUNNER };
@@ -101,13 +110,44 @@ async function applyAction(repoDir, actionName, input = {}) {
 
 const defaultRepo = () => session?.workspacePath || process.cwd();
 const allowlist = createRepoAllowlist({ defaultRepo });
+// El host de extensiones no es una sesión de chat: su cwd/workspacePath no es un repo.
+// Sin input.repo el panel debe avisar en vez de gestionar un directorio cualquiera.
+const repoIsGitWorkspace = (dir) => {
+  try {
+    statSync(join(dir, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+};
 // Las acciones del canvas también pasan por el allowlist (no solo HTTP).
 const repoFrom = (input) => allowlist.resolve(input?.repo);
+
+// El input de open_canvas no siempre es utilizable (limitación de la app al serializar),
+// así que el panel permite escribir la ruta del repo en su propia UI. Aceptamos cualquier
+// ruta absoluta que sea un workspace git; el servidor solo escucha en 127.0.0.1 y exige
+// Host+CSRF, y applyAction sigue rechazando todo lo que no sea git.
+function resolveRepoInput(requested) {
+  if (requested === undefined || requested === null || requested === "") return "";
+  try {
+    return allowlist.resolve(requested);
+  } catch {
+    /* fuera de raíces autorizadas; probamos el criterio de workspace git */
+  }
+  let real;
+  try {
+    real = realpathSync.native(requested);
+  } catch {
+    throw new Error("sf_repo_no_permitido");
+  }
+  if (!repoIsGitWorkspace(real)) throw new Error("sf_repo_no_permitido");
+  return real;
+}
 
 const server = createFactoryServer({
   extensionDir: __dirname,
   defaultRepo,
-  resolveRepo: (requested) => allowlist.resolve(requested),
+  resolveRepo: resolveRepoInput,
   readState,
   ensureWatch,
   applyAction,
@@ -129,7 +169,7 @@ const factoryCanvas = createCanvas({
   inputSchema: {
     type: "object",
     properties: {
-      repo: { type: "string", description: "Ruta absoluta del repo (por defecto, el workspace de la sesión)." },
+      repo: { type: "string", description: "Ruta absoluta del repo a gestionar (obligatoria: el host de extensiones no está ligado a una sesión)." },
       title: { type: "string" },
     },
   },
@@ -187,10 +227,12 @@ const factoryCanvas = createCanvas({
     },
   ],
   async open({ instanceId, input }) {
-    // Abrir el canvas con una ruta es la autorización explícita de esa raíz.
-    if (input?.repo) allowlist.authorize(input.repo);
+    // El host de extensiones es un proceso propio (no una sesión de chat): la única
+    // forma fiable de conocer el repo es input.repo. Sin él, dejar repo vacío para
+    // que la UI muestre el aviso en lugar de gestionar un directorio aleatorio.
+    const repoDir = input?.repo ? allowlist.authorize(input.repo) : "";
     return {
-      url: `${baseUrl}/?instanceId=${encodeURIComponent(instanceId)}&repo=${encodeURIComponent(input?.repo || "")}`,
+      url: `${baseUrl}/?instanceId=${encodeURIComponent(instanceId)}&repo=${encodeURIComponent(repoDir)}`,
       title: input?.title || "Software Factory",
       status: "listo",
     };

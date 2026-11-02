@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## v0.1.2
+
+### Changed
+- TODO: describe this release.
+## v0.1.2
+
+### Fixed
+- Canvas Init appeared dead: the extension host is not bound to any chat session, so
+  the panel had no real repo. The panel now has a **Repo field** ("Usar repo") that
+  accepts any absolute path that is a git workspace; non-git paths are rejected
+  (`sf_repo_no_permitido`) and the previous repo is kept on failure.
+- `/state` errors are reported in the panel log instead of failing silently.
+- Writes are guarded to git workspaces only (`repoIsGitWorkspace`), avoiding stray
+  `.software-factory/` directories.
+- Clearer init labels: "Project nº" (number of the GitHub Project) vs "projectOwner"
+  (owner/org of that Project, defaults to the repo owner) with tooltips.
 
 ### Added
 - Release workflow (`release.yml`), `tools/check-release.mjs` and `tools/bump-version.mjs`.

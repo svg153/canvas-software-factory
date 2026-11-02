@@ -1,7 +1,8 @@
 import { createInitPayload, renderState, routeWithRepo } from "/ui.mjs";
 
 const params = new URLSearchParams(location.search);
-const repo = params.get("repo") || "";
+let repo = params.get("repo") || "";
+let events = null;
 
 function log(message) {
   const element = document.getElementById("log");
@@ -33,12 +34,44 @@ document.getElementById("initBtn").onclick = () => action("init", createInitPayl
   rounds: Number(document.getElementById("rounds").value) || 3,
 }));
 
-try {
+function showRepoPath(text) {
+  const repoPathEl = document.getElementById("repopath");
+  if (!repoPathEl) return;
+  repoPathEl.textContent = repo
+    ? `📁 ${text}`
+    : "⚠ Sin repo asignado: escribe la ruta de tu workspace git abajo y pulsa «Usar repo»";
+}
+
+async function loadRepo() {
+  if (events) events.close?.();
   const state = await (await fetch(routeWithRepo("/state", repo))).json();
+  if (state.error) throw new Error(state.error);
+  showRepoPath(state.repo || repo);
   renderState(state.status === "missing" ? null : state);
-  const events = new EventSource(routeWithRepo("/events", repo));
+  events = new EventSource(routeWithRepo("/events", repo));
   events.onmessage = (event) => renderState(JSON.parse(event.data));
   events.onerror = () => log("conexión SSE perdida, reintentando…");
+}
+
+document.getElementById("setRepo").onclick = async () => {
+  const value = document.getElementById("repoInput").value.trim();
+  if (!value) {
+    log("escribe primero la ruta absoluta del repo");
+    return;
+  }
+  const prev = repo;
+  repo = value;
+  try {
+    await loadRepo();
+    log(`repo asignado: ${value}`);
+  } catch (error) {
+    repo = prev;
+    log(`error: ${error.message}`);
+  }
+};
+
+try {
+  await loadRepo();
 } catch (error) {
   log(`error: ${error.message}`);
 }
