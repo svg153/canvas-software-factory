@@ -96,6 +96,10 @@ A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refu
 reopen it and `next` emits no further tasks. To run a new execution, re-`init` the
 repo with `--force` (see contract below).
 
+## Uso headless / multi-arnés
+
+La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, OpenCode o Gemini CLI: instala el skill en el arnés, `sf.mjs init`, y alimenta el CLI con `sf.mjs next --print-prompt` (algunas piezas, en progreso). Matriz de CLIs, flags y quickstart en [docs/harnesses.md](docs/harnesses.md).
+
 ## Runner contract (v2 semantics)
 
 - **`init` never overwrites silently.** If `<repo>/.software-factory/state.json`
