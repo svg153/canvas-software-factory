@@ -45,6 +45,7 @@ function showRepoPath(text) {
 async function loadRepo() {
   if (events) events.close?.();
   const state = await (await fetch(routeWithRepo("/state", repo))).json();
+  if (state.error) throw new Error(state.error);
   showRepoPath(state.repo || repo);
   renderState(state.status === "missing" ? null : state);
   events = new EventSource(routeWithRepo("/events", repo));
@@ -58,11 +59,13 @@ document.getElementById("setRepo").onclick = async () => {
     log("escribe primero la ruta absoluta del repo");
     return;
   }
+  const prev = repo;
   repo = value;
   try {
     await loadRepo();
     log(`repo asignado: ${value}`);
   } catch (error) {
+    repo = prev;
     log(`error: ${error.message}`);
   }
 };
