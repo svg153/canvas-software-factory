@@ -52,15 +52,15 @@ export async function createIssuesFromDraft(state, { dryRun = false } = {}) {
 
 async function logAndAdd(state, url) {
   if (!state.project_id || !url || url === "(dry-run)") return;
-  const num = url.split("/").pop();
+  const owner = (state.repo || "").split("/")[0] || "@me";
   try {
     await gh([
       "project", "item-add", state.project_id,
-      "--type", "issue",
-      "--id", num,
+      "--owner", owner,
+      "--url", url,
     ]);
   } catch (e) {
     // Project add failures should not break the factory run; surface in note.
-    state.notes = (state.notes || "") + `\nproject add failed for #${num}: ${e.message}`;
+    state.notes = (state.notes || "") + `\nproject add failed for ${url}: ${e.message}`;
   }
 }

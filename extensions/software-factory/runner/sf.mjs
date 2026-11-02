@@ -116,7 +116,7 @@ async function cmdNext() {
 async function advance(state) {
   const p = paths(state.repo_path);
   if (state.phase === "issues") {
-    const created = await createIssuesFromDraft(state, { dryRun: Boolean(flags("dry")) });
+    const created = await createIssuesFromDraft(state, { dryRun: Boolean(flags("dry-run")) });
     await logEvent(state.repo_path, `issues phase: ${created.length} issues`);
   }
   if (state.phase === "review") {

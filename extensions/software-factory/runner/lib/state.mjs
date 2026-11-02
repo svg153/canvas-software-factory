@@ -65,7 +65,8 @@ export function taskById(state, id) {
 }
 
 export function openTasks(state, phase = state.phase) {
-  return state.tasks.filter((t) => t.phase === phase && t.status !== "done");
+  // done y failed cierran la tarea: si no, una task fallida bloquea el avance de fase para siempre.
+  return state.tasks.filter((t) => t.phase === phase && t.status !== "done" && t.status !== "failed");
 }
 
 let seq = 0;
