@@ -1164,3 +1164,29 @@ test("init refuses a repo directory that does not exist", async (t) => {
   });
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
 });
+
+test("init persists harness/model, status shows them, invalid harness rejected, old state loads", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-harness-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repoPath = join(tempDir, "repo");
+  await mkdir(repoPath);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await assert.rejects(run("init", repoPath, "--harness", "mario"), (err) => err.code === 1 && /codex/.test(err.stderr));
+  assert.equal(existsSync(join(repoPath, ".software-factory", "state.json")), false);
+
+  await run("init", repoPath, "--repo", "org/repo", "--harness", "codex", "--model", "gpt-5-codex");
+  const state = await loadState(repoPath);
+  assert.equal(state.harness, "codex");
+  assert.equal(state.model, "gpt-5-codex");
+  const status = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(status.harness, "codex");
+  assert.equal(status.model, "gpt-5-codex");
+
+  delete state.harness;
+  delete state.model;
+  await saveState(repoPath, state);
+  const old = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(old.harness, "");
+  assert.equal(old.model, "");
+});
