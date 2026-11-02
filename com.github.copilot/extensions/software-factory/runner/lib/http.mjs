@@ -3,11 +3,16 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
-// Token aleatorio por instancia: el HTML lo expone y la UI lo devuelve en la cabecera.
-// Un sitio externo puede enviar POST "simples" a localhost, pero no conoce el token
-// ni puede leer la respuesta, así que sin cabecera correcta la acción se rechaza.
-export const ACTION_TOKEN_PLACEHOLDER = "__SF_ACTION_TOKEN__";
-export const ACTION_TOKEN_HEADER = "x-sf-action-token";
+// Token aleatorio por instancia. GET / ya no lo incrusta: la UI lo pide a /token (mismo origen,
+// tras validar Host/Origin) y lo envía en `x-sf-token` en /state, /events y POST.
+export const ACTION_TOKEN_HEADER = "x-sf-token";
+const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]"];
+
+export function hostnameOf(hostHeader) {
+  if (typeof hostHeader !== "string" || !hostHeader) return null;
+  const m = hostHeader.toLowerCase().match(/^(\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::(\d{1,5}))?$/);
+  return m ? m[1] : null;
+}
 
 async function readJsonBody(req) {
   let data = "";
@@ -23,7 +28,22 @@ export function createFactoryServer({
   applyAction,
   subscribe,
   resolveRepo,
+  allowHosts = [],
 }) {
+  const allowed = new Set([...LOOPBACK_HOSTS, ...allowHosts.map((h) => h.toLowerCase())]);
+  const hostAllowed = (hostHeader) => allowed.has(hostnameOf(hostHeader));
+  const originAllowed = (origin) => {
+    try {
+      const u = new URL(origin);
+      return u.protocol === "http:" && allowed.has(u.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  };
+  const deny = (res, status, error) => {
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error }));
+  };
   const actionToken = randomBytes(24).toString("hex");
   const tokenOk = (header) => {
     if (typeof header !== "string" || header.length !== actionToken.length) return false;
@@ -31,17 +51,32 @@ export function createFactoryServer({
   };
   return createServer(async (req, res) => {
     try {
+      if (!hostAllowed(req.headers.host)) return deny(res, 403, "sf_host_no_permitido");
+      if (req.headers.origin && !originAllowed(req.headers.origin)) return deny(res, 403, "sf_origen_no_permitido");
       const requestUrl = new URL(req.url, "http://127.0.0.1");
       const requestedRepo = requestUrl.searchParams.get("repo");
-      const repoDir = resolveRepo ? resolveRepo(requestedRepo || defaultRepo()) : requestedRepo || defaultRepo();
       const path = requestUrl.pathname;
 
       if (req.method === "GET" && path === "/") {
         const html = await readFile(join(extensionDir, "index.html"), "utf8");
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(html.replace(ACTION_TOKEN_PLACEHOLDER, actionToken));
+        res.end(html);
         return;
       }
+      if (req.method === "GET" && path === "/token") {
+        if (req.headers["sec-fetch-site"] === "cross-site") return deny(res, 403, "sf_origen_no_permitido");
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ token: actionToken }));
+        return;
+      }
+      const needsToken = path === "/state" || path === "/events" || path === "/action";
+      if (needsToken) {
+        // /events lo consume EventSource, que no puede enviar cabeceras: acepta ?token=.
+        // Riesgo aceptado: solo localhost, Host/Origin validados y el token puede quedar en historial/logs locales.
+        const supplied = req.headers[ACTION_TOKEN_HEADER] ?? (path === "/events" ? requestUrl.searchParams.get("token") : undefined);
+        if (!tokenOk(supplied)) return deny(res, path === "/action" ? 403 : 401, "sf_csrf_token_invalido");
+      }
+      const repoDir = resolveRepo ? resolveRepo(requestedRepo || defaultRepo()) : requestedRepo || defaultRepo();
       if (req.method === "GET" && (path === "/ui.mjs" || path === "/app.mjs")) {
         res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
         res.end(await readFile(join(extensionDir, path.slice(1))));
@@ -67,17 +102,6 @@ export function createFactoryServer({
         return;
       }
       if (req.method === "POST" && path === "/action") {
-        if (!tokenOk(req.headers[ACTION_TOKEN_HEADER])) {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "sf_csrf_token_invalido" }));
-          return;
-        }
-        const origin = req.headers.origin;
-        if (origin && new URL(origin).host !== req.headers.host) {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "sf_origen_no_permitido" }));
-          return;
-        }
         const body = await readJsonBody(req);
         const result = await applyAction(repoDir, body.actionName, body.input || {});
         res.writeHead(200, { "Content-Type": "application/json" });

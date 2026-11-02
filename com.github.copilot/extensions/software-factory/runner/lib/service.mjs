@@ -21,7 +21,7 @@ export class ActionError extends Error {
   }
 }
 
-export function createFactoryService({ defaultRepo, onPlay, resolveRepo, playMessage }) {
+export function createFactoryService({ defaultRepo, onPlay, resolveRepo, playMessage, allowHosts }) {
   const subscribers = new Map();
   const watchers = new Map();
   const statePath = (repoDir) => join(repoDir, ".software-factory", "state.json");
@@ -98,6 +98,7 @@ export function createFactoryService({ defaultRepo, onPlay, resolveRepo, playMes
     extensionDir: EXTENSION_DIR,
     defaultRepo,
     resolveRepo,
+    allowHosts,
     readState,
     ensureWatch,
     applyAction,
