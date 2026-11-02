@@ -12,7 +12,7 @@ import { request as httpRequest } from "node:http";
 import { createFactoryServer } from "../lib/http.mjs";
 import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
 import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
-import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state.mjs";
+import { unclaimedIssues, failedTasks, loadState, saveState, updateState, withStateLock, paths, newTask, writeWorkOrder } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt, planPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
 import { buildCanvasManifest } from "../../../../../tools/make-canvas-manifest.mjs";
@@ -1315,9 +1315,9 @@ test("issue identity: number/url canonical, normalized title fallback, failed im
   assert.equal(s2.tasks.filter((x) => x.status === "failed").length, 4, "el historial de fallos se conserva");
 });
 
-test("canvas writeStatus delegates to atomic saveState and interleaved writes keep state.json parseable", async (t) => {
+test("canvas writeStatus delegates to locked updateState and interleaved writes keep state.json parseable", async (t) => {
   const src = await readFile(join(extensionDir, "extension.mjs"), "utf8");
-  assert.match(src, /await saveState\(repoDir, state\)/);
+  assert.match(src, /await updateState\(repoDir,/);
   assert.doesNotMatch(src, /writeFile/);
 
   const repo = await mkdtemp(join(tmpdir(), "sf-writestatus-"));
@@ -1344,4 +1344,53 @@ test("canvas writeStatus delegates to atomic saveState and interleaved writes ke
   assert.deepEqual(final.notes, ["keep"]);
   const leftovers = (await readdir(join(repo, ".software-factory"))).filter((n) => n.endsWith(".tmp"));
   assert.deepEqual(leftovers, []);
+});
+
+test("updateState serializes contenders: all mutations survive and lock is released", async (t) => {
+  const repo = await mkdtemp(join(tmpdir(), "sf-lock-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await saveState(repo, { status: "idle", tasks: [], count: 0, canvas: 0 });
+  // Contendores controlados: el lock los serializa, sin EPERM ni pérdida de escrituras.
+  await Promise.all(Array.from({ length: 12 }, (_, i) =>
+    updateState(repo, (s) => { if (i % 2) s.canvas++; else s.count++; return s; })));
+  const s = await loadState(repo);
+  assert.equal(s.count, 6);
+  assert.equal(s.canvas, 6);
+  const names = await readdir(join(repo, ".software-factory"));
+  assert.deepEqual(names.filter((n) => n.endsWith(".lock") || n.endsWith(".tmp")), []);
+});
+
+test("withStateLock recovers stale lock and times out are not needed for free lock; mutate=false skips write", async (t) => {
+  const repo = await mkdtemp(join(tmpdir(), "sf-lock2-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await saveState(repo, { status: "idle" });
+  const lock = `${paths(repo).state}.lock`;
+  await writeFile(lock, "99999");
+  const old = new Date(Date.now() - 120_000);
+  const { utimes } = await import("node:fs/promises");
+  await utimes(lock, old, old);
+  await withStateLock(repo, async () => {});
+  assert.equal(existsSync(lock), false);
+  const before = await readFile(paths(repo).state, "utf8");
+  await updateState(repo, () => false);
+  assert.equal(await readFile(paths(repo).state, "utf8"), before);
+  await assert.rejects(updateState(repo, () => { throw new Error("boom"); }), /boom/);
+  assert.equal(existsSync(lock), false, "el lock se libera si mutate falla");
+});
+
+test("crash mid-write leaves state.json parseable and writeWorkOrder is atomic", async (t) => {
+  const repo = await mkdtemp(join(tmpdir(), "sf-crash-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  const state = { status: "idle", repo_path: repo, round: 1, tasks: [] };
+  await saveState(repo, state);
+  const good = await readFile(paths(repo).state, "utf8");
+  // Fallo simulado: un .tmp a medias (crash antes del rename) no afecta al state.
+  await writeFile(`${paths(repo).state}.123.abc.tmp`, '{"status":"run');
+  JSON.parse(await readFile(paths(repo).state, "utf8"));
+  assert.equal(await readFile(paths(repo).state, "utf8"), good);
+  const task = newTask(state, "discover", "t");
+  await writeWorkOrder(task, "# orden\n");
+  assert.equal(await readFile(task.prompt_file, "utf8"), "# orden\n");
+  const src = await readFile(join(extensionDir, "runner", "lib", "state.mjs"), "utf8");
+  assert.match(src, /atomicWrite\(task\.prompt_file/);
 });
