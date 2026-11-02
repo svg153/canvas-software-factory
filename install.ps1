@@ -17,13 +17,17 @@
       canvas-meta.json + plugin.json con tools/make-canvas-manifest.mjs.
 .PARAMETER CopilotHome
     Ruta de COPILOT_HOME. Por defecto $env:COPILOT_HOME o ~/.copilot.
+.PARAMETER Check
+    Solo comprueba si la instalacion esta sincronizada con el repo (version, archivos,
+    canvas.json y SKILL.md). Sale con codigo 1 si hay deriva; no escribe nada.
 .PARAMETER Force
     Instala/actualiza sin preguntar.
 #>
 [CmdletBinding()]
 param(
   [string]$CopilotHome = $(if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $HOME ".copilot" }),
-  [switch]$Force
+  [switch]$Force,
+  [switch]$Check
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,6 +81,37 @@ function Sync-Tree {
   }
 }
 
+if ($Check) {
+  $extT = Join-Path $CopilotHome "extensions\software-factory"
+  $skillT = Join-Path $CopilotHome "skills\software-factory"
+  $problems = @()
+  $srcPlugin = Get-Content (Join-Path $PSScriptRoot "plugin.json") -Raw | ConvertFrom-Json
+  if (-not (Test-Path $extT)) { $problems += "no hay instalacion en $extT" }
+  else {
+    $missingInstalled = @(Get-ChildItem -Recurse -File $extSource | ForEach-Object {
+      $rel = $_.FullName.Substring((Resolve-Path $extSource).Path.TrimEnd('\', '/').Length).TrimStart('\', '/')
+      if (-not (Test-Path (Join-Path $extT $rel))) { $rel }
+    })
+    if ($missingInstalled.Count) { $problems += "faltan archivos instalados: $($missingInstalled -join ', ')" }
+    $instPkg = Join-Path $extT "package.json"
+    if (Test-Path $instPkg) {
+      $instVersion = (Get-Content $instPkg -Raw | ConvertFrom-Json).version
+      if ($instVersion -ne $srcPlugin.version) { $problems += "version instalada $instVersion != manifiesto $($srcPlugin.version)" }
+    }
+    if (-not (Test-Path (Join-Path $extT "canvas.json"))) { $problems += "falta canvas.json generado" }
+  }
+  $srcSkill = Join-Path $skillSource "SKILL.md"
+  $instSkill = Join-Path $skillT "SKILL.md"
+  if (-not (Test-Path $instSkill)) { $problems += "falta la skill instalada $instSkill" }
+  elseif ((Get-FileHash $srcSkill).Hash -ne (Get-FileHash $instSkill).Hash) { $problems += "SKILL.md instalada difiere de la del repo" }
+  if ($problems.Count) {
+    $problems | ForEach-Object { Write-Host "DESINCRONIZADO: $_" -ForegroundColor Red }
+    Write-Host "Ejecuta install.ps1 para actualizar."
+    exit 1
+  }
+  Write-Host "Instalacion sincronizada con v$($srcPlugin.version)."
+  exit 0
+}
 $extTarget = Join-Path $CopilotHome "extensions\software-factory"
 $skillTarget = Join-Path $CopilotHome "skills\software-factory"
 

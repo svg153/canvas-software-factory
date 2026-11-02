@@ -192,13 +192,35 @@ awesome-copilot gate is not executed here),
 generates the install-target `canvas.json` with
 `tools/make-canvas-manifest.mjs`, and runs the install suite on `windows-latest`.
 
+## Governance & releases
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the release process (merge a version bump to
+`main` and `release.yml` tags and publishes it, verifying versions, CHANGELOG and the
+skill) and the branch-protection checklist for maintainers, and [SECURITY.md](SECURITY.md)
+for vulnerability reporting. Check an installation against the repo with
+`.\install.ps1 -Check` (exit 1 on drift). Branch protection on `main` is configured in
+repo settings, not in code.
+
 ## Limitations (verified, not promised)
+
+- No `package-lock.json` is committed (the runner uses only Node built-ins; the SDK
+  dependency is pinned exactly and `engines.node >=20` is declared).
 
 - The installer updates files in place but does not remove files deleted upstream; a
   file that no longer exists in the source can linger in the install target.
 - `install.ps1` uses Windows-style paths; on Linux/macOS use the manual install.
 - Canvas discovery relies on the generated `canvas.json` and the app's extension host,
   which this repo does not ship or control.
+- El servidor loopback del canvas valida `Host` (solo `127.0.0.1:<puerto>`/`localhost:<puerto>`),
+  rechaza `Origin` externo o `Sec-Fetch-Site: cross-site` en `POST /action`, limita el body a
+  64 KB, envía `X-Content-Type-Options: nosniff` y CSP, y no expone rutas locales en errores.
+  No es autenticación de usuario: cualquier proceso local sigue pudiendo leer el token del HTML.
+- `?repo=` (en `/state`, `/events`, `/action`) y `input.repo` de las acciones del canvas solo aceptan
+  rutas absolutas, existentes y dentro (por `realpath`, así que `..` y symlinks que escapan se
+  rechazan) del workspace de la sesión o de una raíz autorizada; el resto devuelve 400
+  `sf_repo_no_permitido` sin tocar disco. Un repo externo se autoriza abriendo el canvas con
+  `repo` (acción explícita) o con la variable `SF_ALLOWED_ROOTS` (lista separada por `;` en Windows,
+  `:` en Linux/macOS). Las autorizaciones viven en memoria y se pierden al reiniciar la extensión.
 
 ## Repo layout notes
 

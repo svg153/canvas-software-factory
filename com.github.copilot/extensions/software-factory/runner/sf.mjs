@@ -11,7 +11,7 @@ import {
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
 } from "./lib/prompts.mjs";
-import { createIssuesFromDraft } from "./lib/gh.mjs";
+import { createIssuesFromDraft, validateInitInputs } from "./lib/gh.mjs";
 import { startGuardError } from "./lib/actions.mjs";
 
 const [, , cmd, repoArg = ".", ...rest] = process.argv;
@@ -93,6 +93,11 @@ async function cmdInit() {
   const project = flags("project") || "";
   const projectOwner = flags("project-owner") || "";
   const rounds = flags("rounds") || 3;
+  const inputErrors = validateInitInputs({ repo, project, projectOwner });
+  if (inputErrors.length) {
+    for (const m of inputErrors) console.error(m);
+    process.exit(1);
+  }
   const state = defaultState(repoPath, { repo, project, projectOwner, rounds });
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
@@ -210,6 +215,7 @@ async function advance(state, { dryRun = isDryRun() } = {}) {
       persistState: dryRun ? async () => {} : () => saveState(work.repo_path, work),
     });
     preview.issues = created;
+    preview.failures = created.failures;
     if (!dryRun) await logEvent(work.repo_path, `issues phase: ${created.length} issues`);
   }
   if (work.phase === "review") {
@@ -311,7 +317,7 @@ async function cmdIssues() {
   }
   console.log(JSON.stringify({
     ok: true, dry_run: dry,
-    created: created.length, urls: created,
+    created: created.length, urls: created, failures: created.failures,
   }, null, 2));
 }
 

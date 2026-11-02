@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- Release workflow (`release.yml`), `tools/check-release.mjs` and `tools/bump-version.mjs`.
+- `install.ps1 -Check` detects stale installations (version, files, skill drift).
+- SECURITY, CONTRIBUTING, CODEOWNERS, issue/PR templates; `engines.node >=20`.
 - **User idea injection ("vocal ideas").** The canvas now has an idea box and a
   `add_idea` action, and the runner a `idea <repo> "<text>"` command. An idea is
   stored as a *seed* (`state.seeds`, `status: new`) that does not start its own

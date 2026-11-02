@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
 import { createFactoryServer } from "./runner/lib/http.mjs";
+import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
 import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
-import { saveState } from "./runner/lib/state.mjs";
+import { updateState } from "./runner/lib/state.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, "runner", "sf.mjs");
@@ -30,10 +31,11 @@ async function readState(repoDir) {
 }
 
 async function writeStatus(repoDir, status) {
-  const state = await readState(repoDir);
-  if (!state) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
-  state.status = status;
-  await saveState(repoDir, state);
+  const state = await updateState(repoDir, (current) => {
+    if (!current) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
+    current.status = status;
+    return current;
+  });
   broadcast(repoDir, state);
   return state;
 }
@@ -103,9 +105,15 @@ async function applyAction(repoDir, actionName, input = {}) {
   throw new CanvasError("sf_unknown_action", `Acción desconocida: ${actionName}`);
 }
 
+const defaultRepo = () => session?.workspacePath || process.cwd();
+const allowlist = createRepoAllowlist({ defaultRepo });
+// Las acciones del canvas también pasan por el allowlist (no solo HTTP).
+const repoFrom = (input) => allowlist.resolve(input?.repo);
+
 const server = createFactoryServer({
   extensionDir: __dirname,
-  defaultRepo: () => session?.workspacePath || process.cwd(),
+  defaultRepo,
+  resolveRepo: (requested) => allowlist.resolve(requested),
   readState,
   ensureWatch,
   applyAction,
@@ -136,21 +144,21 @@ const factoryCanvas = createCanvas({
       name: "get_state",
       description: "Devuelve el estado de la fábrica (state.json).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "get_state");
+        return applyAction(repoFrom(input), "get_state");
       },
     },
     {
       name: "play",
       description: "Pone la fábrica en running y envía al agente el prompt de arranque del bucle.",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "play");
+        return applyAction(repoFrom(input), "play");
       },
     },
     {
       name: "pause",
       description: "Pausa la fábrica (status=paused).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "pause");
+        return applyAction(repoFrom(input), "pause");
       },
     },
     {
@@ -167,7 +175,7 @@ const factoryCanvas = createCanvas({
         },
       },
       handler({ input }) {
-        const repoDir = input?.repo || session?.workspacePath || process.cwd();
+        const repoDir = repoFrom(input);
         return applyAction(repoDir, "init", {
           repo: input?.github_repo,
           project: input?.project,
@@ -197,11 +205,13 @@ const factoryCanvas = createCanvas({
       name: "next_work",
       description: "Pide al runner la siguiente tanda de work orders (fase actual).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "next");
+        return applyAction(repoFrom(input), "next");
       },
     },
   ],
   async open({ instanceId, input }) {
+    // Abrir el canvas con una ruta es la autorización explícita de esa raíz.
+    if (input?.repo) allowlist.authorize(input.repo);
     return {
       url: `${baseUrl}/?instanceId=${encodeURIComponent(instanceId)}&repo=${encodeURIComponent(input?.repo || "")}`,
       title: input?.title || "Software Factory",

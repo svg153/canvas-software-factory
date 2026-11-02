@@ -2,6 +2,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
+import { sameIssue } from "./state.mjs";
 
 const run = promisify(execFile);
 
@@ -20,9 +21,24 @@ async function gh(args) {
   return stdout.trim();
 }
 
+const PROJECT_ID_RE = /^(\d+|PVT_\w+)$/;
+const OWNER_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[\w.-]+$/;
+
+// Validación temprana (init): valores con "-" inicial serían parseados como flags de gh.
+export function validateInitInputs({ repo = "", project = "", projectOwner = "" } = {}) {
+  const errors = [];
+  if (repo && !(REPO_RE.test(repo) && !repo.split("/")[1].startsWith("-"))) errors.push(`--repo inválido (${JSON.stringify(repo)}): usa owner/name`);
+  if (project && !PROJECT_ID_RE.test(String(project))) errors.push(`--project inválido (${JSON.stringify(project)}): usa un número o PVT_xxx`);
+  if (projectOwner && !OWNER_RE.test(projectOwner)) errors.push(`--project-owner inválido (${JSON.stringify(projectOwner)}): usa [A-Za-z0-9-]+`);
+  return errors;
+}
+
 export function projectItemAddArgs(state, url) {
   const owner = state.project_owner || state.repo?.split("/")[0];
   if (!owner) throw new Error("Project owner is required to add an issue to a project");
+  if (!OWNER_RE.test(owner)) throw new Error(`Project owner inválido: ${JSON.stringify(owner)}`);
+  if (!PROJECT_ID_RE.test(String(state.project_id))) throw new Error(`project_id inválido: ${JSON.stringify(state.project_id)}`);
   return [
     "project", "item-add", state.project_id,
     "--owner", owner,
@@ -53,22 +69,48 @@ export async function createIssuesFromDraft(state, {
     "utf8",
   ).catch(() => '{"issues":[]}');
   const draft = JSON.parse(draftRaw);
-  const existing = new Set(state.issues.map((i) => i.title));
-  const pending = (draft.issues || []).filter((it) => it?.title && !existing.has(it.title));
+  const known = [...state.issues];
+  const isKnown = (it) => known.some((k) => sameIssue(k, it));
+  const pending = (draft.issues || []).filter((it) => it?.title && !isKnown(it));
   // Valida el slug antes de crear nada (también en dry-run): config inválida = fallo
   // accionable inmediato, nunca operación sobre el cwd del runner.
   if (pending.length > 0) repoSlug(state);
   const created = [];
+  created.failures = [];
+  state.issue_failures = state.issue_failures || {};
+  const labelOk = new Map();
+  const addNote = (m) => { state.notes = (state.notes || "") + `\n${m}`; };
+  // Pre-crea cada label (idempotente con --force); si no se puede, se filtra con nota.
+  const ensureLabel = async (name) => {
+    if (labelOk.has(name)) return labelOk.get(name);
+    let ok = false;
+    if (typeof name === "string" && name && !name.startsWith("-")) {
+      try {
+        await runGh(["label", "create", name, "--repo", repoSlug(state), "--force",
+          "--color", "ededed", "--description", "Created by Software Factory"]);
+        ok = true;
+      } catch (e) {
+        addNote(`label "${name}" no se pudo crear; se omite: ${e.message}`);
+      }
+    } else {
+      addNote(`label inválido omitido: ${JSON.stringify(name)}`);
+    }
+    labelOk.set(name, ok);
+    return ok;
+  };
   // Numeración ficticia continúa del mayor número ya presente en el state (real o
   // sembrada por pruebas) para no solaparse con issues existentes.
   let nextFakeNumber = state.issues.reduce((max, i) => Math.max(max, Number(i.number) || 0), 900);
 
   for (const it of draft.issues || []) {
-    if (!it?.title || existing.has(it.title)) continue;
+    if (!it?.title || isKnown(it)) continue;
     // Deduplicación DENTRO de la invocación (dry y real): dos títulos iguales en el
     // mismo draft se procesan una sola vez, no solo contra lo ya persistido.
-    existing.add(it.title);
-    const labels = (it.labels || []).flatMap((l) => ["--label", l]);
+    known.push({ number: it.number, url: it.url, title: it.title });
+    const wanted = Array.isArray(it.labels) ? it.labels : [];
+    const usable = dryRun ? wanted : [];
+    if (!dryRun) for (const l of wanted) if (await ensureLabel(l)) usable.push(l);
+    const labels = usable.flatMap((l) => ["--label", l]);
     const args = [
       "issue", "create",
       "--repo", repoSlug(state),
@@ -83,13 +125,31 @@ export async function createIssuesFromDraft(state, {
       created.push({ title: it.title, url: "(dry-run)", number: ++nextFakeNumber, dry: true });
       continue;
     }
-    const url = await runGh(args);
-    // Validar la salida ANTES de guardar: sin URL utilizable no se persiste nada.
-    const match = /^https?:\/\/\S+\/issues\/(\d+)\/?$/i.exec(url);
-    const number = match ? Number(match[1]) : NaN;
-    if (!Number.isFinite(number)) {
-      throw new Error(`salida de gh issue create no utilizable para "${it.title}": ${JSON.stringify(url.slice(0, 200))}`);
+    // Un fallo determinista idéntico (mismos args) no se repite en re-runs.
+    const signature = JSON.stringify(args);
+    const prev = state.issue_failures[it.title];
+    if (prev && prev.signature === signature) {
+      created.failures.push({ title: it.title, error: prev.error, skipped: true });
+      continue;
     }
+    let url;
+    let number;
+    try {
+      url = await runGh(args);
+      // Validar la salida ANTES de guardar: sin URL utilizable no se persiste nada.
+      const match = /^https?:\/\/\S+\/issues\/(\d+)\/?$/i.exec(url);
+      number = match ? Number(match[1]) : NaN;
+      if (!Number.isFinite(number)) {
+        throw new Error(`salida de gh issue create no utilizable para "${it.title}": ${JSON.stringify(String(url).slice(0, 200))}`);
+      }
+    } catch (e) {
+      state.issue_failures[it.title] = { signature, error: e.message };
+      created.failures.push({ title: it.title, error: e.message });
+      addNote(`issue create failed for "${it.title}": ${e.message}`);
+      await persistState();
+      continue;
+    }
+    delete state.issue_failures[it.title];
     created.push({ title: it.title, url, number });
     state.issues.push({ title: it.title, url, number, at: new Date().toISOString() });
     await persistState();

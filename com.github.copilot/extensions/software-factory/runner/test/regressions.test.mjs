@@ -7,11 +7,14 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
+import { request as httpRequest } from "node:http";
 
 import { createFactoryServer } from "../lib/http.mjs";
+import { createRepoAllowlist } from "../lib/allowlist.mjs";
+import { symlink } from "node:fs/promises";
 import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
 import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "../lib/actions.mjs";
-import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state.mjs";
+import { unclaimedIssues, failedTasks, loadState, saveState, updateState, withStateLock, paths, newTask, writeWorkOrder } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt, planPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
 import { buildCanvasManifest } from "../../../../../tools/make-canvas-manifest.mjs";
@@ -62,13 +65,20 @@ test("builds the supported gh project item-add arguments", () => {
 });
 
 test("uses one selected repository for state, SSE, and action routes", async (t) => {
-  const selectedRepo = "C:\\repos\\target & one";
+  const base = await mkdtemp(join(tmpdir(), "sf-route-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sessionDir = join(base, "session");
+  const selectedRepo = join(sessionDir, "target & one");
+  await mkdir(selectedRepo, { recursive: true });
+  const allowlist = createRepoAllowlist({ defaultRepo: () => sessionDir, env: {} });
+  const canonicalRepo = allowlist.resolve(selectedRepo);
   const accesses = [];
   const watches = [];
   let subscription;
   const server = createFactoryServer({
     extensionDir,
-    defaultRepo: () => "C:\\session\\workspace",
+    defaultRepo: () => sessionDir,
+    resolveRepo: (requested) => allowlist.resolve(requested),
     readState: async (repo) => {
       accesses.push(repo);
       return { repo, status: "running" };
@@ -88,13 +98,13 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`);
-  assert.equal((await stateResponse.json()).repo, selectedRepo);
+  assert.equal((await stateResponse.json()).repo, canonicalRepo);
 
   const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}`);
   const reader = eventsResponse.body.getReader();
   const firstEvent = await reader.read();
-  assert.match(new TextDecoder().decode(firstEvent.value), /"repo":"C:\\\\repos\\\\target & one"/);
-  assert.equal(subscription, selectedRepo);
+  assert.equal(JSON.parse(new TextDecoder().decode(firstEvent.value).slice(6)).repo, canonicalRepo);
+  assert.equal(subscription, canonicalRepo);
   await reader.cancel();
 
   const actionResponse = await fetch(`${baseUrl}${routeWithRepo("/action", selectedRepo)}`, {
@@ -106,9 +116,9 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
   const action = await actionResponse.json();
-  assert.equal(action.repo, selectedRepo);
-  assert.deepEqual(accesses, [selectedRepo, selectedRepo, selectedRepo]);
-  assert.deepEqual(watches, [selectedRepo, selectedRepo]);
+  assert.equal(action.repo, canonicalRepo);
+  assert.deepEqual(accesses, [canonicalRepo, canonicalRepo, canonicalRepo]);
+  assert.deepEqual(watches, [canonicalRepo, canonicalRepo]);
 
   assert.equal(routeWithRepo("/state", selectedRepo), `/state?repo=${encodeURIComponent(selectedRepo)}`);
   assert.equal(routeWithRepo("/events", selectedRepo), `/events?repo=${encodeURIComponent(selectedRepo)}`);
@@ -203,13 +213,14 @@ test("persists created issues before a later failure so retry skips them", async
     persistedIssues = state.issues.map((issue) => ({ ...issue }));
   };
 
-  await assert.rejects(
-    createIssuesFromDraft(state, { runGh: simulatedGh, persistState: persist }),
-    /simulated gh create failure/,
-  );
+  const first = await createIssuesFromDraft(state, { runGh: simulatedGh, persistState: persist });
+  assert.deepEqual(first.failures.map((f) => f.title), ["Second"]);
+  assert.match(first.failures[0].error, /simulated gh create failure/);
   assert.deepEqual(persistedIssues.map((issue) => issue.title), ["First"]);
 
   state.issues = persistedIssues;
+  assert.equal(state.issue_failures.Second.error, "simulated gh create failure");
+  delete state.issue_failures; // reset manual del registro de fallos para forzar el reintento
   const retriedTitles = [];
   const retryGh = async (args) => {
     const title = args[args.indexOf("--title") + 1];
@@ -223,6 +234,52 @@ test("persists created issues before a later failure so retry skips them", async
   assert.deepEqual(retriedTitles, ["Second"]);
   assert.deepEqual(created.map((issue) => issue.title), ["Second"]);
   assert.deepEqual(state.issues.map((issue) => issue.title), ["First", "Second"]);
+});
+
+test("missing labels are auto-created before issue create and failures never abort the phase", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-labels-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  await writeFile(join(tempDir, ".software-factory", "issues-draft.json"), JSON.stringify({
+    issues: [
+      { title: "A", labels: ["brand-new", "-evil"] },
+      { title: "B", labels: ["brand-new"] },
+      { title: "C" },
+    ],
+  }));
+  const state = { repo_path: tempDir, repo: "org/repo", project_id: "", issues: [] };
+  const calls = [];
+  const runGh = async (args) => {
+    calls.push(args);
+    if (args[0] === "issue" && args.includes("B")) throw new Error("boom");
+    if (args[0] === "issue") return `https://github.com/org/repo/issues/${calls.length}`;
+    return "";
+  };
+  const created = await createIssuesFromDraft(state, { runGh });
+  const labelCalls = calls.filter((c) => c[0] === "label");
+  assert.equal(labelCalls.length, 1, "label se crea una sola vez");
+  assert.deepEqual(labelCalls[0].slice(0, 3), ["label", "create", "brand-new"]);
+  assert.ok(labelCalls[0].includes("--force"));
+  assert.ok(calls.findIndex((c) => c[0] === "label") < calls.findIndex((c) => c[0] === "issue"));
+  assert.deepEqual(created.map((i) => i.title), ["A", "C"]);
+  assert.deepEqual(created.failures.map((f) => f.title), ["B"]);
+  assert.match(state.notes, /label inválido omitido/);
+  assert.match(state.notes, /issue create failed for "B": boom/);
+
+  calls.length = 0;
+  const again = await createIssuesFromDraft(state, { runGh });
+  assert.equal(calls.filter((c) => c[0] === "issue").length, 0, "fallo determinista no se repite");
+  assert.equal(again.failures[0].skipped, true);
+});
+
+test("init rejects invalid repo, project and project-owner early", async (t) => {
+  const runnerPath = join(dirname(fileURLToPath(import.meta.url)), "..", "sf.mjs");
+  for (const bad of [["--repo", "-x/y"], ["--repo", "nope"], ["--repo", "org/repo", "--project", "-1"], ["--repo", "org/repo", "--project", "abc"], ["--repo", "org/repo", "--project-owner", "-bad"]]) {
+    const repoPath = await mkdtemp(join(tmpdir(), "sf-init-bad-"));
+    t.after(() => rm(repoPath, { recursive: true, force: true }));
+    await assert.rejects(execFileAsync(process.execPath, [runnerPath, "init", repoPath, ...bad]), (e) => e.code === 1 && /inválido/.test(e.stderr));
+    assert.equal(existsSync(join(repoPath, ".software-factory", "state.json")), false);
+  }
 });
 
 // Regresión QA: el flujo real create -> project item-add confirmado por probe en gh
@@ -580,6 +637,76 @@ test("POST /action rejects missing or wrong CSRF token and accepts the HTML-expo
   assert.notEqual(await actionTokenFrom(server2), token);
 });
 
+test("loopback server validates Host/Origin, caps bodies and hides paths", async (t) => {
+  const applied = [];
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\repo",
+    readState: async () => null,
+    ensureWatch() {},
+    subscribe() {},
+    applyAction: async (repo, actionName) => {
+      if (actionName === "boom") throw new Error("ENOENT: C:\\secret\\dir\\file.json");
+      applied.push(actionName);
+      return { status: "ok" };
+    },
+  });
+  await listen(server);
+  t.after(() => closeServer(server));
+  const port = server.address().port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const token = await actionTokenFrom(server);
+  const body = (actionName) => JSON.stringify({ actionName, input: {} });
+  const post = (headers, payload = body("pause")) => fetch(`${baseUrl}/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-sf-action-token": token, ...headers },
+    body: payload,
+  });
+  // fetch no permite forjar Host; http.request sí.
+  const rawRequest = (headers, payload) => new Promise((resolveReq, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path: "/", method: payload ? "POST" : "GET", headers }, (res) => {
+      let text = "";
+      res.on("data", (chunk) => { text += chunk; });
+      res.on("end", () => resolveReq({ status: res.statusCode, text, headers: res.headers }));
+    });
+    req.on("error", reject);
+    req.end(payload);
+  });
+
+  { const r0 = await post({}); assert.equal(r0.status, 200, await r0.text()); }
+  { const r1 = await post({ Origin: `http://localhost:${port}` }); assert.equal(r1.status, 200, await r1.text()); }
+  assert.equal((await post({ Origin: baseUrl, "Sec-Fetch-Site": "same-origin" })).status, 200);
+
+  let response = await post({ Origin: "https://evil.example" });
+  assert.equal(response.status, 403);
+  assert.ok(!(await response.text()).includes(token));
+  assert.equal((await post({ "Sec-Fetch-Site": "cross-site" })).status, 403);
+  assert.deepEqual(applied, ["pause", "pause", "pause"]);
+
+  // Rebinding: el Host forjado no obtiene el HTML (ni el token) ni puede actuar.
+  const forgedPage = await rawRequest({ Host: `evil.example:${port}` });
+  assert.equal(forgedPage.status, 403);
+  assert.ok(!forgedPage.text.includes(token));
+  const forgedAction = await rawRequest({ Host: "evil.example", "x-sf-action-token": token, "Content-Type": "application/json" }, body("pause"));
+  assert.equal(forgedAction.status, 403);
+  assert.equal(applied.length, 3);
+
+  response = await post({}, JSON.stringify({ actionName: "pause", input: { pad: "x".repeat(70 * 1024) } }));
+  assert.equal(response.status, 413);
+
+  for (const bad of [await post({}, "{no-json"), await post({}, body("boom"))]) {
+    assert.equal(bad.status, 400);
+    const text = await bad.text();
+    assert.ok(!/[A-Za-z]:\\|ENOENT|secret/.test(text), `sin paths en errores: ${text}`);
+  }
+
+  for (const path of ["/", "/state"]) {
+    const res = await fetch(`${baseUrl}${path}`);
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+    assert.match(res.headers.get("content-security-policy") || "", /default-src 'self'/);
+    await res.arrayBuffer();
+  }
+});
 test("startGuardError only blocks finished factories; canvas play uses it", () => {
   assert.match(startGuardError({ status: "done" }), /ya terminó/);
   assert.equal(startGuardError({ status: "running" }), null);
@@ -1072,20 +1199,19 @@ test("gh exit code decides: stderr noise with 0 succeeds, exit 1 aborts, garbage
   assert.equal(ok.created, 1);
   assert.equal((await loadState(repo)).issues.length, 1);
 
-  // exit != 0: aborta y nada se persiste.
+  // exit != 0: el fallo se registra sin abortar y nada nuevo se persiste.
   const stateFile = join(repo, ".software-factory", "state.json");
   await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({ issues: [{ title: "Beta" }] }));
-  await assert.rejects(runWith("fail", "issues", repo), (error) => {
-    assert.equal(error.code, 1);
-    return true;
-  });
+  const failed = JSON.parse((await runWith("fail", "issues", repo)).stdout);
+  assert.equal(failed.created, 0);
+  assert.equal(failed.failures.length, 1);
+  assert.equal(failed.failures[0].title, "Beta");
   assert.deepEqual((await loadState(repo)).issues.map((i) => i.title), ["Alpha"], "exit!=0 no persiste nada nuevo");
 
   // exit 0 con stdout inservible: error accionable, nada persistido.
-  await assert.rejects(runWith("garbage", "issues", repo), (error) => {
-    assert.match(error.stderr, /no utilizable/);
-    return true;
-  });
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({ issues: [{ title: "Gamma" }] }));
+  const garbage = JSON.parse((await runWith("garbage", "issues", repo)).stdout);
+  assert.match(garbage.failures[0].error, /no utilizable/);
   assert.deepEqual((await loadState(repo)).issues.map((i) => i.title), ["Alpha"]);
   assert.ok(existsSync(stateFile), "state.json sigue íntegro");
 });
@@ -1165,9 +1291,119 @@ test("init refuses a repo directory that does not exist", async (t) => {
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
 });
 
-test("canvas writeStatus delegates to atomic saveState and interleaved writes keep state.json parseable", async (t) => {
+test("?repo= allowlist rejects traversal, siblings and symlink escapes; accepts workspace and authorized roots", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "sf-allow-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const workspace = join(base, "workspace");
+  const sub = join(workspace, "pkg");
+  const sibling = join(base, "workspace-evil");
+  const external = join(base, "external");
+  const outside = join(base, "outside");
+  for (const dir of [sub, sibling, external, outside]) await mkdir(dir, { recursive: true });
+  await mkdir(join(sibling, ".software-factory"));
+  await writeFile(join(sibling, ".software-factory", "state.json"), '{"secret":true}');
+  let linkOk = true;
+  try {
+    await symlink(outside, join(workspace, "escape"), "junction");
+  } catch {
+    linkOk = false;
+  }
+  const allowlist = createRepoAllowlist({ defaultRepo: () => workspace, env: {} });
+  const touched = [];
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => workspace,
+    resolveRepo: (requested) => allowlist.resolve(requested),
+    readState: async (repo) => { touched.push(repo); return { repo }; },
+    ensureWatch: (repo) => touched.push(repo),
+    applyAction: async (repo) => { touched.push(repo); return { repo }; },
+    subscribe: (repo) => touched.push(repo),
+  });
+  await listen(server);
+  t.after(() => closeServer(server));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const token = await actionTokenFrom(server);
+  const get = (path, repo) => fetch(`${baseUrl}${routeWithRepo(path, repo)}`);
+  const post = (repo) => fetch(`${baseUrl}${routeWithRepo("/action", repo)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-sf-action-token": token },
+    body: JSON.stringify({ actionName: "pause", input: {} }),
+  });
+
+  const rejected = [
+    join(workspace, "..", "outside"),
+    sibling,
+    external,
+    "relative/path",
+    join(workspace, "missing"),
+    `${workspace}\0`,
+  ];
+  if (linkOk) rejected.push(join(workspace, "escape"));
+  for (const repo of rejected) {
+    for (const response of [await get("/state", repo), await get("/events", repo), await post(repo)]) {
+      assert.equal(response.status, 400, repo);
+      assert.deepEqual(await response.json(), { error: "sf_repo_no_permitido" });
+    }
+  }
+  assert.deepEqual(touched, [], "rutas fuera del allowlist no tocan disco ni estado");
+
+  assert.equal((await (await get("/state", "")).json()).repo, workspace);
+  assert.equal((await (await get("/state", sub)).json()).repo, allowlist.resolve(sub));
+  assert.equal((await post(sub)).status, 200);
+
+  allowlist.authorize(external);
+  assert.equal((await (await get("/state", external)).json()).repo, allowlist.resolve(external));
+  assert.equal((await get("/state", sibling)).status, 400, "autorizar una raíz no abre las demás");
+});
+
+test("SF_ALLOWED_ROOTS authorizes extra roots at startup", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "sf-env-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const workspace = join(base, "ws");
+  const extra = join(base, "extra");
+  await mkdir(workspace);
+  await mkdir(extra);
+  const allowlist = createRepoAllowlist({ defaultRepo: () => workspace, env: { SF_ALLOWED_ROOTS: extra } });
+  assert.equal(allowlist.resolve(extra), allowlist.resolve(join(extra, ".")));
+  assert.throws(() => createRepoAllowlist({ defaultRepo: () => workspace, env: {} }).resolve(extra), /sf_repo_no_permitido/);
+});
+
+test("issue identity: number/url canonical, normalized title fallback, failed implement re-claimable", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-identity-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  const calls = [];
+  const runGh = async (args) => {
+    calls.push(args);
+    return `https://github.com/org/repo/issues/${40 + calls.length}`;
+  };
+  const state = {
+    repo_path: tempDir, repo: "org/repo", issues: [
+      { title: "Fix  Login Bug", url: "https://github.com/org/repo/issues/7", number: 7 },
+    ], tasks: [],
+  };
+  const draft = (issues) => writeFile(join(tempDir, ".software-factory", "issues-draft.json"), JSON.stringify({ issues }));
+
+  await draft([
+    { title: "fix login bug" }, // mismo título normalizado
+    { title: "Totally reworded", number: 7 }, // misma identidad por número
+    { title: "Login bug follow-up" }, // similar pero distinta
+  ]);
+  const created = await createIssuesFromDraft(state, { runGh });
+  assert.deepEqual(created.map((c) => c.title), ["Login bug follow-up"]);
+
+  const mk = (number, status) => ({ phase: "implement", status, issue: { number } });
+  const s2 = { issues: [{ number: 1, title: "a" }, { number: 2, title: "b" }, { number: 3, title: "c" }, { number: 4, title: "d" }],
+    tasks: [mk(1, "done"), mk(2, "failed"), mk(3, "failed"), mk(3, "awaiting_agent")] };
+  assert.deepEqual(unclaimedIssues(s2).map((i) => i.number), [2, 4]);
+  s2.tasks.push(mk(2, "failed"), mk(1, "failed"));
+  assert.ok(unclaimedIssues(s2).some((i) => i.number === 1), "el último intento manda");
+  assert.equal(s2.tasks.filter((x) => x.status === "failed").length, 4, "el historial de fallos se conserva");
+});
+
+test("canvas writeStatus delegates to locked updateState and interleaved writes keep state.json parseable", async (t) => {
   const src = await readFile(join(extensionDir, "extension.mjs"), "utf8");
-  assert.match(src, /await saveState\(repoDir, state\)/);
+  assert.match(src, /await updateState\(repoDir,/);
   assert.doesNotMatch(src, /writeFile/);
 
   const repo = await mkdtemp(join(tmpdir(), "sf-writestatus-"));
@@ -1350,4 +1586,53 @@ test("canvas and UI wire add_idea to the idea action and render seeds", async ()
   // doc sin contenedor #seeds (como el test de render previo) no debe romperse
   const minimal = new FakeDocument(["status", "round", "pipeline", "tasks", "issues"]);
   renderState({ status: "running", round: 1, max_rounds: 3, phase: "plan", tasks: [], issues: [], seeds: [{ text: "x" }] }, minimal);
+});
+
+test("updateState serializes contenders: all mutations survive and lock is released", async (t) => {
+  const repo = await mkdtemp(join(tmpdir(), "sf-lock-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await saveState(repo, { status: "idle", tasks: [], count: 0, canvas: 0 });
+  // Contendores controlados: el lock los serializa, sin EPERM ni pérdida de escrituras.
+  await Promise.all(Array.from({ length: 12 }, (_, i) =>
+    updateState(repo, (s) => { if (i % 2) s.canvas++; else s.count++; return s; })));
+  const s = await loadState(repo);
+  assert.equal(s.count, 6);
+  assert.equal(s.canvas, 6);
+  const names = await readdir(join(repo, ".software-factory"));
+  assert.deepEqual(names.filter((n) => n.endsWith(".lock") || n.endsWith(".tmp")), []);
+});
+
+test("withStateLock recovers stale lock and times out are not needed for free lock; mutate=false skips write", async (t) => {
+  const repo = await mkdtemp(join(tmpdir(), "sf-lock2-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await saveState(repo, { status: "idle" });
+  const lock = `${paths(repo).state}.lock`;
+  await writeFile(lock, "99999");
+  const old = new Date(Date.now() - 120_000);
+  const { utimes } = await import("node:fs/promises");
+  await utimes(lock, old, old);
+  await withStateLock(repo, async () => {});
+  assert.equal(existsSync(lock), false);
+  const before = await readFile(paths(repo).state, "utf8");
+  await updateState(repo, () => false);
+  assert.equal(await readFile(paths(repo).state, "utf8"), before);
+  await assert.rejects(updateState(repo, () => { throw new Error("boom"); }), /boom/);
+  assert.equal(existsSync(lock), false, "el lock se libera si mutate falla");
+});
+
+test("crash mid-write leaves state.json parseable and writeWorkOrder is atomic", async (t) => {
+  const repo = await mkdtemp(join(tmpdir(), "sf-crash-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  const state = { status: "idle", repo_path: repo, round: 1, tasks: [] };
+  await saveState(repo, state);
+  const good = await readFile(paths(repo).state, "utf8");
+  // Fallo simulado: un .tmp a medias (crash antes del rename) no afecta al state.
+  await writeFile(`${paths(repo).state}.123.abc.tmp`, '{"status":"run');
+  JSON.parse(await readFile(paths(repo).state, "utf8"));
+  assert.equal(await readFile(paths(repo).state, "utf8"), good);
+  const task = newTask(state, "discover", "t");
+  await writeWorkOrder(task, "# orden\n");
+  assert.equal(await readFile(task.prompt_file, "utf8"), "# orden\n");
+  const src = await readFile(join(extensionDir, "runner", "lib", "state.mjs"), "utf8");
+  assert.match(src, /atomicWrite\(task\.prompt_file/);
 });
