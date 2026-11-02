@@ -78,7 +78,11 @@ const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
 const PHASE_LABELS = { discover: "Descubrimiento", plan: "Plan GSD", grill: "Grill-me", issues: "Issues + Project", implement: "Implementación", review: "Revisión/Auditoría" };
 const params = new URLSearchParams(location.search);
 const repo = params.get("repo") || "";
-const base = "";
+// Sustituido por el servidor al servir este HTML (ver extension.mjs).
+const ACTION_TOKEN = "__SF_ACTION_TOKEN__";
+// Los títulos de tareas/issues son output del agente: nunca inyectarlos crudos en innerHTML.
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const safeUrl = (u) => (/^https?:\/\//.test(String(u || "")) ? esc(u) : "#");
 let lastRound = 0, lastPhase = "";
 
 function log(m) { const el = document.getElementById("log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
@@ -98,17 +102,17 @@ function render(s) {
     div.className = "phase" + (s && s.phase === p ? " active" : "") + (s && i < idx ? " donep" : "");
     const ts = tasksByPhase[p] || [];
     const done = ts.filter(t => t.status === "done").length;
-    div.innerHTML = `<b>${PHASE_LABELS[p]}</b><span>${ts.length ? `${done}/${ts.length} tareas` : "—"}</span>`;
+    div.innerHTML = `<b>${esc(PHASE_LABELS[p])}</b><span>${ts.length ? `${done}/${ts.length} tareas` : "—"}</span>`;
     pipe.appendChild(div);
   });
   const tasksEl = document.getElementById("tasks");
   const open = (s?.tasks || []).filter(t => t.phase === s.phase);
   tasksEl.innerHTML = open.length ? open.map(t =>
-    `<div class="task"><span class="dot ${t.status}"></span><span class="t">${t.title}</span><span class="id">${t.id} · ${t.status}</span></div>`
+    `<div class="task"><span class="dot ${esc(t.status)}"></span><span class="t">${esc(t.title)}</span><span class="id">${esc(t.id)} · ${esc(t.status)}</span></div>`
   ).join("") : `<div class="empty">Fase ${s?.phase || "—"} sin tareas (pulsa Play o next).</div>`;
   const issEl = document.getElementById("issues");
   issEl.innerHTML = (s?.issues || []).length ? s.issues.map(i =>
-    `<div class="issue"><a href="${i.url}" target="_blank">#${i.number || ""} ${i.title}</a></div>`
+    `<div class="issue"><a href="${safeUrl(i.url)}" target="_blank" rel="noopener">#${esc(i.number || "")} ${esc(i.title)}</a></div>`
   ).join("") : `<div class="empty">Ninguna todavía.</div>`;
   if (s && s.round !== lastRound) { lastRound = s.round; }
   if (s && s.phase !== lastPhase) { lastPhase = s.phase; }
@@ -117,7 +121,7 @@ function render(s) {
 async function action(actionName, input = {}) {
   const url = "/action" + (repo ? `?repo=${encodeURIComponent(repo)}` : "");
   const r = await fetch(url, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", "x-sf-action": ACTION_TOKEN },
     body: JSON.stringify({ actionName, input }),
   });
   const j = await r.json();

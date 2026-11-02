@@ -5,6 +5,7 @@ import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
 
@@ -13,6 +14,9 @@ const RUNNER = join(__dirname, "runner", "sf.mjs");
 const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
 const subscribers = new Map();
 let session;
+// Token servido solo en el HTML del canvas (misma origin): bloqueo CSRF desde
+// otras páginas web que pudieran hacer POST al puerto localhost a ciegas.
+const ACTION_TOKEN = randomUUID();
 
 function sfPaths(repoDir) {
   const root = join(repoDir, ".software-factory");
@@ -47,7 +51,7 @@ function factoryPrompt(repoDir, state) {
     `Runner: node "${RUNNER}"`,
     state
       ? `Estado actual: round ${state.round}/${state.max_rounds}, fase "${state.phase}", status ${state.status}.`
-      : `Sin estado: ejecuta primero init con el repo appropriate (usa gh para owner/name).`,
+      : `Sin estado: ejecuta primero node "${RUNNER}" init ${repoDir} --repo owner/name (deduce owner/name con gh repo view --json nameWithOwner; no continúes sin estado).`,
     `Empieza con: node "${RUNNER}" next ${repoDir} — luego trabaja cada work order pendiente,`,
     `guarda resultados y marca complete. Avanza fases hasta pausar o terminar.`,
   ].join("\n");
@@ -76,7 +80,12 @@ function broadcast(repoDir, state) {
 async function applyAction(repoDir, actionName, input = {}) {
   if (actionName === "get_state") {
     const state = await readState(repoDir);
-    return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, runner: RUNNER };
+    return {
+      status: state ? `${state.phase} (round ${state.round})` : "sin estado",
+      state,
+      notes: state?.notes || "",
+      runner: RUNNER,
+    };
   }
   if (actionName === "play") {
     const state = await writeStatus(repoDir, "running");
@@ -117,7 +126,8 @@ const server = http.createServer(async (req, res) => {
     const repoDir = repoFromReq(req);
     if (req.method === "GET" && (req.url === "/" || req.url?.startsWith("/?"))) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(await readFile(join(__dirname, "index.html")));
+      const html = await readFile(join(__dirname, "index.html"), "utf8");
+      res.end(html.replace("__SF_ACTION_TOKEN__", ACTION_TOKEN));
       return;
     }
     if (req.method === "GET" && req.url?.startsWith("/state")) {
@@ -138,6 +148,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url?.startsWith("/action")) {
+      if (req.headers["x-sf-action"] !== ACTION_TOKEN) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "sf_bad_token" }));
+        return;
+      }
       const body = await new Promise((resolve) => {
         let data = "";
         req.on("data", (c) => (data += c));
