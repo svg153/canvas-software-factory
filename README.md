@@ -185,6 +185,12 @@ generates the install-target `canvas.json` with
   rechaza `Origin` externo o `Sec-Fetch-Site: cross-site` en `POST /action`, limita el body a
   64 KB, envía `X-Content-Type-Options: nosniff` y CSP, y no expone rutas locales en errores.
   No es autenticación de usuario: cualquier proceso local sigue pudiendo leer el token del HTML.
+- `?repo=` (en `/state`, `/events`, `/action`) y `input.repo` de las acciones del canvas solo aceptan
+  rutas absolutas, existentes y dentro (por `realpath`, así que `..` y symlinks que escapan se
+  rechazan) del workspace de la sesión o de una raíz autorizada; el resto devuelve 400
+  `sf_repo_no_permitido` sin tocar disco. Un repo externo se autoriza abriendo el canvas con
+  `repo` (acción explícita) o con la variable `SF_ALLOWED_ROOTS` (lista separada por `;` en Windows,
+  `:` en Linux/macOS). Las autorizaciones viven en memoria y se pierden al reiniciar la extensión.
 
 ## Repo layout notes
 

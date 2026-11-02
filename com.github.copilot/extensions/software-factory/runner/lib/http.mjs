@@ -55,6 +55,10 @@ function isLoopbackOrigin(origin) {
 export function createFactoryServer({
   extensionDir,
   defaultRepo,
+  resolveRepo = (requested) => {
+    if (requested) throw new HttpError(400, "sf_repo_no_permitido");
+    return defaultRepo();
+  },
   readState,
   ensureWatch,
   applyAction,
@@ -79,8 +83,15 @@ export function createFactoryServer({
         return;
       }
       const requestUrl = new URL(req.url, "http://127.0.0.1");
-      const repoDir = requestUrl.searchParams.get("repo") || defaultRepo();
       const path = requestUrl.pathname;
+      let repoDir;
+      if (path === "/state" || path === "/events" || path === "/action") {
+        try {
+          repoDir = resolveRepo(requestUrl.searchParams.get("repo") || "");
+        } catch {
+          throw new HttpError(400, "sf_repo_no_permitido");
+        }
+      }
 
       if (req.method === "GET" && path === "/") {
         const html = await readFile(join(extensionDir, "index.html"), "utf8");

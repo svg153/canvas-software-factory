@@ -10,6 +10,8 @@ import { promisify } from "node:util";
 import { request as httpRequest } from "node:http";
 
 import { createFactoryServer } from "../lib/http.mjs";
+import { createRepoAllowlist } from "../lib/allowlist.mjs";
+import { symlink } from "node:fs/promises";
 import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
 import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state.mjs";
@@ -63,13 +65,20 @@ test("builds the supported gh project item-add arguments", () => {
 });
 
 test("uses one selected repository for state, SSE, and action routes", async (t) => {
-  const selectedRepo = "C:\\repos\\target & one";
+  const base = await mkdtemp(join(tmpdir(), "sf-route-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sessionDir = join(base, "session");
+  const selectedRepo = join(sessionDir, "target & one");
+  await mkdir(selectedRepo, { recursive: true });
+  const allowlist = createRepoAllowlist({ defaultRepo: () => sessionDir, env: {} });
+  const canonicalRepo = allowlist.resolve(selectedRepo);
   const accesses = [];
   const watches = [];
   let subscription;
   const server = createFactoryServer({
     extensionDir,
-    defaultRepo: () => "C:\\session\\workspace",
+    defaultRepo: () => sessionDir,
+    resolveRepo: (requested) => allowlist.resolve(requested),
     readState: async (repo) => {
       accesses.push(repo);
       return { repo, status: "running" };
@@ -89,13 +98,13 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`);
-  assert.equal((await stateResponse.json()).repo, selectedRepo);
+  assert.equal((await stateResponse.json()).repo, canonicalRepo);
 
   const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}`);
   const reader = eventsResponse.body.getReader();
   const firstEvent = await reader.read();
-  assert.match(new TextDecoder().decode(firstEvent.value), /"repo":"C:\\\\repos\\\\target & one"/);
-  assert.equal(subscription, selectedRepo);
+  assert.equal(JSON.parse(new TextDecoder().decode(firstEvent.value).slice(6)).repo, canonicalRepo);
+  assert.equal(subscription, canonicalRepo);
   await reader.cancel();
 
   const actionResponse = await fetch(`${baseUrl}${routeWithRepo("/action", selectedRepo)}`, {
@@ -107,9 +116,9 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
   const action = await actionResponse.json();
-  assert.equal(action.repo, selectedRepo);
-  assert.deepEqual(accesses, [selectedRepo, selectedRepo, selectedRepo]);
-  assert.deepEqual(watches, [selectedRepo, selectedRepo]);
+  assert.equal(action.repo, canonicalRepo);
+  assert.deepEqual(accesses, [canonicalRepo, canonicalRepo, canonicalRepo]);
+  assert.deepEqual(watches, [canonicalRepo, canonicalRepo]);
 
   assert.equal(routeWithRepo("/state", selectedRepo), `/state?repo=${encodeURIComponent(selectedRepo)}`);
   assert.equal(routeWithRepo("/events", selectedRepo), `/events?repo=${encodeURIComponent(selectedRepo)}`);
@@ -1234,4 +1243,81 @@ test("init refuses a repo directory that does not exist", async (t) => {
     return true;
   });
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
+});
+
+test("?repo= allowlist rejects traversal, siblings and symlink escapes; accepts workspace and authorized roots", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "sf-allow-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const workspace = join(base, "workspace");
+  const sub = join(workspace, "pkg");
+  const sibling = join(base, "workspace-evil");
+  const external = join(base, "external");
+  const outside = join(base, "outside");
+  for (const dir of [sub, sibling, external, outside]) await mkdir(dir, { recursive: true });
+  await mkdir(join(sibling, ".software-factory"));
+  await writeFile(join(sibling, ".software-factory", "state.json"), '{"secret":true}');
+  let linkOk = true;
+  try {
+    await symlink(outside, join(workspace, "escape"), "junction");
+  } catch {
+    linkOk = false;
+  }
+  const allowlist = createRepoAllowlist({ defaultRepo: () => workspace, env: {} });
+  const touched = [];
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => workspace,
+    resolveRepo: (requested) => allowlist.resolve(requested),
+    readState: async (repo) => { touched.push(repo); return { repo }; },
+    ensureWatch: (repo) => touched.push(repo),
+    applyAction: async (repo) => { touched.push(repo); return { repo }; },
+    subscribe: (repo) => touched.push(repo),
+  });
+  await listen(server);
+  t.after(() => closeServer(server));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const token = await actionTokenFrom(server);
+  const get = (path, repo) => fetch(`${baseUrl}${routeWithRepo(path, repo)}`);
+  const post = (repo) => fetch(`${baseUrl}${routeWithRepo("/action", repo)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-sf-action-token": token },
+    body: JSON.stringify({ actionName: "pause", input: {} }),
+  });
+
+  const rejected = [
+    join(workspace, "..", "outside"),
+    sibling,
+    external,
+    "relative/path",
+    join(workspace, "missing"),
+    `${workspace}\0`,
+  ];
+  if (linkOk) rejected.push(join(workspace, "escape"));
+  for (const repo of rejected) {
+    for (const response of [await get("/state", repo), await get("/events", repo), await post(repo)]) {
+      assert.equal(response.status, 400, repo);
+      assert.deepEqual(await response.json(), { error: "sf_repo_no_permitido" });
+    }
+  }
+  assert.deepEqual(touched, [], "rutas fuera del allowlist no tocan disco ni estado");
+
+  assert.equal((await (await get("/state", "")).json()).repo, workspace);
+  assert.equal((await (await get("/state", sub)).json()).repo, allowlist.resolve(sub));
+  assert.equal((await post(sub)).status, 200);
+
+  allowlist.authorize(external);
+  assert.equal((await (await get("/state", external)).json()).repo, allowlist.resolve(external));
+  assert.equal((await get("/state", sibling)).status, 400, "autorizar una raíz no abre las demás");
+});
+
+test("SF_ALLOWED_ROOTS authorizes extra roots at startup", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "sf-env-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const workspace = join(base, "ws");
+  const extra = join(base, "extra");
+  await mkdir(workspace);
+  await mkdir(extra);
+  const allowlist = createRepoAllowlist({ defaultRepo: () => workspace, env: { SF_ALLOWED_ROOTS: extra } });
+  assert.equal(allowlist.resolve(extra), allowlist.resolve(join(extra, ".")));
+  assert.throws(() => createRepoAllowlist({ defaultRepo: () => workspace, env: {} }).resolve(extra), /sf_repo_no_permitido/);
 });
