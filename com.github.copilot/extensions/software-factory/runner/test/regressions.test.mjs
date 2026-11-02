@@ -619,6 +619,28 @@ test("full CLI cycle ends done at max_rounds without extra-round tasks", async (
   assert.equal((await loadState(repo)).tasks.length, before, "next no debe emitir tareas tras done");
 });
 
+test("next --print-prompt prints only the work order; JSON mode unchanged; exit 3 when nothing to print", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-print-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  // pausada: stdout vacío, exit 3, hint por stderr
+  await run("pause", repo);
+  await assert.rejects(run("next", repo, "--print-prompt"), (e) => e.code === 3 && e.stdout === "" && /start/.test(e.stderr));
+  await run("start", repo);
+
+  const json = JSON.parse((await run("next", repo)).stdout);
+  assert.ok(json.tasks.length > 0 && json.tasks[0].prompt);
+  const plain = await run("next", repo, "--print-prompt");
+  assert.equal(plain.stdout, json.tasks[0].prompt);
+  const byId = await run("next", repo, "--print-prompt", "--task", json.tasks[0].id);
+  assert.equal(byId.stdout, json.tasks[0].prompt);
+  await assert.rejects(run("next", repo, "--print-prompt", "--task", "nope"), (e) => e.code === 3 && e.stdout === "");
+});
+
 test("start right after completing a phase's last task does not re-emit it", async (t) => {
   const tempDir = await mkdtemp(join(tmpdir(), "sf-restart-"));
   t.after(() => rm(tempDir, { recursive: true, force: true }));
