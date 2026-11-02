@@ -203,13 +203,14 @@ test("persists created issues before a later failure so retry skips them", async
     persistedIssues = state.issues.map((issue) => ({ ...issue }));
   };
 
-  await assert.rejects(
-    createIssuesFromDraft(state, { runGh: simulatedGh, persistState: persist }),
-    /simulated gh create failure/,
-  );
+  const first = await createIssuesFromDraft(state, { runGh: simulatedGh, persistState: persist });
+  assert.deepEqual(first.failures.map((f) => f.title), ["Second"]);
+  assert.match(first.failures[0].error, /simulated gh create failure/);
   assert.deepEqual(persistedIssues.map((issue) => issue.title), ["First"]);
 
   state.issues = persistedIssues;
+  assert.equal(state.issue_failures.Second.error, "simulated gh create failure");
+  delete state.issue_failures; // reset manual del registro de fallos para forzar el reintento
   const retriedTitles = [];
   const retryGh = async (args) => {
     const title = args[args.indexOf("--title") + 1];
@@ -223,6 +224,52 @@ test("persists created issues before a later failure so retry skips them", async
   assert.deepEqual(retriedTitles, ["Second"]);
   assert.deepEqual(created.map((issue) => issue.title), ["Second"]);
   assert.deepEqual(state.issues.map((issue) => issue.title), ["First", "Second"]);
+});
+
+test("missing labels are auto-created before issue create and failures never abort the phase", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-labels-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  await writeFile(join(tempDir, ".software-factory", "issues-draft.json"), JSON.stringify({
+    issues: [
+      { title: "A", labels: ["brand-new", "-evil"] },
+      { title: "B", labels: ["brand-new"] },
+      { title: "C" },
+    ],
+  }));
+  const state = { repo_path: tempDir, repo: "org/repo", project_id: "", issues: [] };
+  const calls = [];
+  const runGh = async (args) => {
+    calls.push(args);
+    if (args[0] === "issue" && args.includes("B")) throw new Error("boom");
+    if (args[0] === "issue") return `https://github.com/org/repo/issues/${calls.length}`;
+    return "";
+  };
+  const created = await createIssuesFromDraft(state, { runGh });
+  const labelCalls = calls.filter((c) => c[0] === "label");
+  assert.equal(labelCalls.length, 1, "label se crea una sola vez");
+  assert.deepEqual(labelCalls[0].slice(0, 3), ["label", "create", "brand-new"]);
+  assert.ok(labelCalls[0].includes("--force"));
+  assert.ok(calls.findIndex((c) => c[0] === "label") < calls.findIndex((c) => c[0] === "issue"));
+  assert.deepEqual(created.map((i) => i.title), ["A", "C"]);
+  assert.deepEqual(created.failures.map((f) => f.title), ["B"]);
+  assert.match(state.notes, /label inválido omitido/);
+  assert.match(state.notes, /issue create failed for "B": boom/);
+
+  calls.length = 0;
+  const again = await createIssuesFromDraft(state, { runGh });
+  assert.equal(calls.filter((c) => c[0] === "issue").length, 0, "fallo determinista no se repite");
+  assert.equal(again.failures[0].skipped, true);
+});
+
+test("init rejects invalid repo, project and project-owner early", async (t) => {
+  const runnerPath = join(dirname(fileURLToPath(import.meta.url)), "..", "sf.mjs");
+  for (const bad of [["--repo", "-x/y"], ["--repo", "nope"], ["--repo", "org/repo", "--project", "-1"], ["--repo", "org/repo", "--project", "abc"], ["--repo", "org/repo", "--project-owner", "-bad"]]) {
+    const repoPath = await mkdtemp(join(tmpdir(), "sf-init-bad-"));
+    t.after(() => rm(repoPath, { recursive: true, force: true }));
+    await assert.rejects(execFileAsync(process.execPath, [runnerPath, "init", repoPath, ...bad]), (e) => e.code === 1 && /inválido/.test(e.stderr));
+    assert.equal(existsSync(join(repoPath, ".software-factory", "state.json")), false);
+  }
 });
 
 // Regresión QA: el flujo real create -> project item-add confirmado por probe en gh
@@ -1072,20 +1119,19 @@ test("gh exit code decides: stderr noise with 0 succeeds, exit 1 aborts, garbage
   assert.equal(ok.created, 1);
   assert.equal((await loadState(repo)).issues.length, 1);
 
-  // exit != 0: aborta y nada se persiste.
+  // exit != 0: el fallo se registra sin abortar y nada nuevo se persiste.
   const stateFile = join(repo, ".software-factory", "state.json");
   await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({ issues: [{ title: "Beta" }] }));
-  await assert.rejects(runWith("fail", "issues", repo), (error) => {
-    assert.equal(error.code, 1);
-    return true;
-  });
+  const failed = JSON.parse((await runWith("fail", "issues", repo)).stdout);
+  assert.equal(failed.created, 0);
+  assert.equal(failed.failures.length, 1);
+  assert.equal(failed.failures[0].title, "Beta");
   assert.deepEqual((await loadState(repo)).issues.map((i) => i.title), ["Alpha"], "exit!=0 no persiste nada nuevo");
 
   // exit 0 con stdout inservible: error accionable, nada persistido.
-  await assert.rejects(runWith("garbage", "issues", repo), (error) => {
-    assert.match(error.stderr, /no utilizable/);
-    return true;
-  });
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({ issues: [{ title: "Gamma" }] }));
+  const garbage = JSON.parse((await runWith("garbage", "issues", repo)).stdout);
+  assert.match(garbage.failures[0].error, /no utilizable/);
   assert.deepEqual((await loadState(repo)).issues.map((i) => i.title), ["Alpha"]);
   assert.ok(existsSync(stateFile), "state.json sigue íntegro");
 });
