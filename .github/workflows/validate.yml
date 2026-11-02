@@ -22,7 +22,7 @@ jobs:
         run: find com.github.copilot tools -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
       - name: Validate manifests
         run: node --input-type=module -e "import fs from 'node:fs'; for (const path of ['plugin.json', 'com.github.copilot/extensions/software-factory/package.json', 'canvas-meta.json']) JSON.parse(fs.readFileSync(path, 'utf8'))"
-      - name: External plugin layout gate
+      - name: Partial external layout/manifest check (official awesome-copilot gate not run)
         run: node tools/check-external-layout.mjs
       - name: Extension tree must not ship canvas.json
         run: test ! -e com.github.copilot/extensions/software-factory/canvas.json

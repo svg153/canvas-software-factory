@@ -15,6 +15,7 @@ import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state
 import { bootstrapPrompt, discoverPrompt, grillPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
 import { buildCanvasManifest } from "../../../../../tools/make-canvas-manifest.mjs";
+import { checkExternalLayout, validatePluginManifest, validateAgainstSchema } from "../../../../../tools/check-external-layout.mjs";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -356,11 +357,21 @@ test("canvas.json is not distributed; the installer generates it from plugin met
   assert.match(installer, /tools\\make-canvas-manifest\.mjs/);
 });
 
-test("external plugin layout satisfies the awesome-copilot canvas structure gate", async () => {
+test("external layout passes the local partial check (official awesome-copilot gate not run here)", async () => {
+  // El checker solo debe anunciar lo que comprueba: espejo parcial de estructura
+  // + esquema Agent Plugins 1.0.0 vendido. El gate oficial completo no se ejecuta.
+  const checker = await readFile(join(repoRoot, "tools", "check-external-layout.mjs"), "utf8");
+  assert.match(checker, /Comprobaci[oó]n LOCAL y PARCIAL/, "el checker debe declararse parcial");
+  assert.match(checker, /gate oficial completo de awesome-copilot no se ejecuta/i,
+    "el checker debe dejar constancia de que el gate oficial no corre aquí");
+  assert.doesNotMatch(checker, /Layout externo OK \((gate|esquema Agent Plugins 1\.0\))/,
+    "el checker no puede anunciar conformidad completa que no valida");
+
   const pluginManifest = await readFile(join(repoRoot, "plugin.json"), "utf8").then(JSON.parse);
-  const allowed = ["$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions"];
-  const extra = Object.keys(pluginManifest).filter((key) => !allowed.includes(key));
-  assert.deepEqual(extra, [], "plugin.json declara campos no permitidos por el esquema Agent Plugins 1.0");
+  assert.deepEqual(await validatePluginManifest(pluginManifest), [],
+    "plugin.json debe validar contra el esquema Agent Plugins 1.0.0 vendido");
+  assert.deepEqual(await checkExternalLayout(repoRoot), [],
+    "el repo debe pasar la comprobación parcial de layout/manifest");
   assert.ok(pluginManifest.keywords.includes("canvas"), "keywords debe incluir 'canvas' para activar el gate de estructura");
   // runCanvasStructureGate exige com.github.copilot/extensions/<id>/extension.mjs versionado.
   await readFile(join(repoRoot, "com.github.copilot", "extensions", "software-factory", "extension.mjs"));
@@ -377,6 +388,29 @@ test("external plugin layout satisfies the awesome-copilot canvas structure gate
   await assert.rejects(
     readFile(join(repoRoot, "com.github.copilot", "extensions", "software-factory", "canvas.json")),
   );
+});
+
+test("the vendored schema validator rejects manifests the old key-list check would miss", async () => {
+  // Regresión: antes el checker solo miraba algunas claves y anunciaba "esquema
+  // Agent Plugins 1.0" completo. Ahora valida tipos, nombre requerido/patrón,
+  // const, additionalProperties anidados y palabras no soportadas, en abierto.
+  const schema = JSON.parse(await readFile(join(repoRoot, "tools", "schemas", "agent-plugins-1.0.0.plugin.schema.json"), "utf8"));
+  const good = {
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    name: "software-factory",
+    keywords: ["canvas"],
+    extensions: { "com.github.copilot": { logo: "assets/preview.png" } },
+  };
+  assert.deepEqual(validateAgainstSchema(good, schema, "$"), [], "el esquema vendido debe aceptar un manifest válido");
+  assert.ok(validateAgainstSchema({ ...good, name: "Bad_Name" }, schema, "$").some((e) => /patrón/.test(e)), "name con mayúsculas/guion bajo viola el patrón");
+  assert.ok(validateAgainstSchema({ ...good, name: "a--b" }, schema, "$").some((e) => /patrón/.test(e)), "name con '--' viola el patrón");
+  assert.ok(validateAgainstSchema({ ...good, $schema: "https://example.com/other.json" }, schema, "$").some((e) => /exactamente/.test(e)), "$schema debe coincidir con el const");
+  assert.ok(validateAgainstSchema({ keywords: "canvas", name: "ok" }, schema, "$").some((e) => /requerido/.test(e)), "falta $schema requerido");
+  assert.ok(validateAgainstSchema({ ...good, version: 1 }, schema, "$").some((e) => /tipo esperado 'string'/.test(e)), "version debe ser string");
+  assert.ok(validateAgainstSchema({ ...good, author: { name: "x", twitter: "y" } }, schema, "$").some((e) => /no permitido 'twitter'/.test(e)), "author rechaza campos extra");
+  assert.ok(validateAgainstSchema({ ...good, keywords: ["canvas", 42] }, schema, "$").some((e) => /keywords\[1\]/.test(e)), "keywords items string");
+  assert.ok(validateAgainstSchema({ ...good, extensions: { "com.github.copilot": "logo.png" } }, schema, "$").some((e) => /tipo esperado 'object'/.test(e)), "namespaces deben ser object");
+  assert.ok(validateAgainstSchema(good, { type: "object", unknownKeyword: true }, "$").some((e) => /no soportada/.test(e)), "palabras no soportadas fallan en abierto");
 });
 
 test("POST /action rejects missing or wrong CSRF token and accepts the HTML-exposed one", async (t) => {

@@ -45,7 +45,13 @@ canonical source of the canvas extension lives under the Copilot namespace
 (`com.github.copilot/extensions/software-factory/extension.mjs`), which is what the
 official canvas structure gate requires when the manifest declares the `canvas`
 keyword; skills are discovered by convention from `skills/` at the package root.
-`tools/check-external-layout.mjs` mirrors that gate locally and runs in CI.
+`tools/check-external-layout.mjs` is a **local partial check** that runs in CI: it
+mirrors some of that gate's structure assertions and validates `plugin.json` against
+the vendored copy of the official Agent Plugins 1.0.0 schema
+(`tools/schemas/agent-plugins-1.0.0.plugin.schema.json`) using a dependency-free
+minimal validator covering exactly the keywords that schema uses (unsupported
+keywords fail loudly). It does not run the full official awesome-copilot gate and
+does not claim to.
 Use the same command with `-Force` to replace an existing installation (your
 `<repo>/.software-factory/` state and any installed `artifacts/` are preserved),
 then reload extensions in the app (or restart it).
@@ -141,8 +147,10 @@ regression tests. Install/maintainability tests (temp `COPILOT_HOME` only, never
 real install) run with `pwsh -NoProfile -File tests/install-tests.ps1` from the repo
 root. The GitHub Actions workflow also checks the JavaScript syntax, validates the
 plugin, package and `canvas-meta.json` manifests, runs
-`node tools/check-external-layout.mjs` (namespaced canvas entry, no duplicate
-outside the namespace, no versioned `canvas.json`, schema-allowed manifest fields),
+`node tools/check-external-layout.mjs` (partial local check: namespaced canvas entry,
+no duplicate outside the namespace, no versioned `canvas.json`, plus `plugin.json`
+validated against the vendored Agent Plugins 1.0.0 schema — the full official
+awesome-copilot gate is not executed here),
 generates the install-target `canvas.json` with
 `tools/make-canvas-manifest.mjs`, and runs the install suite on `windows-latest`.
 
