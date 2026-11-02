@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
+import { request as httpRequest } from "node:http";
 
 import { createFactoryServer } from "../lib/http.mjs";
 import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
@@ -627,6 +628,76 @@ test("POST /action rejects missing or wrong CSRF token and accepts the HTML-expo
   assert.notEqual(await actionTokenFrom(server2), token);
 });
 
+test("loopback server validates Host/Origin, caps bodies and hides paths", async (t) => {
+  const applied = [];
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\repo",
+    readState: async () => null,
+    ensureWatch() {},
+    subscribe() {},
+    applyAction: async (repo, actionName) => {
+      if (actionName === "boom") throw new Error("ENOENT: C:\\secret\\dir\\file.json");
+      applied.push(actionName);
+      return { status: "ok" };
+    },
+  });
+  await listen(server);
+  t.after(() => closeServer(server));
+  const port = server.address().port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const token = await actionTokenFrom(server);
+  const body = (actionName) => JSON.stringify({ actionName, input: {} });
+  const post = (headers, payload = body("pause")) => fetch(`${baseUrl}/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-sf-action-token": token, ...headers },
+    body: payload,
+  });
+  // fetch no permite forjar Host; http.request sí.
+  const rawRequest = (headers, payload) => new Promise((resolveReq, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path: "/", method: payload ? "POST" : "GET", headers }, (res) => {
+      let text = "";
+      res.on("data", (chunk) => { text += chunk; });
+      res.on("end", () => resolveReq({ status: res.statusCode, text, headers: res.headers }));
+    });
+    req.on("error", reject);
+    req.end(payload);
+  });
+
+  { const r0 = await post({}); assert.equal(r0.status, 200, await r0.text()); }
+  { const r1 = await post({ Origin: `http://localhost:${port}` }); assert.equal(r1.status, 200, await r1.text()); }
+  assert.equal((await post({ Origin: baseUrl, "Sec-Fetch-Site": "same-origin" })).status, 200);
+
+  let response = await post({ Origin: "https://evil.example" });
+  assert.equal(response.status, 403);
+  assert.ok(!(await response.text()).includes(token));
+  assert.equal((await post({ "Sec-Fetch-Site": "cross-site" })).status, 403);
+  assert.deepEqual(applied, ["pause", "pause", "pause"]);
+
+  // Rebinding: el Host forjado no obtiene el HTML (ni el token) ni puede actuar.
+  const forgedPage = await rawRequest({ Host: `evil.example:${port}` });
+  assert.equal(forgedPage.status, 403);
+  assert.ok(!forgedPage.text.includes(token));
+  const forgedAction = await rawRequest({ Host: "evil.example", "x-sf-action-token": token, "Content-Type": "application/json" }, body("pause"));
+  assert.equal(forgedAction.status, 403);
+  assert.equal(applied.length, 3);
+
+  response = await post({}, JSON.stringify({ actionName: "pause", input: { pad: "x".repeat(70 * 1024) } }));
+  assert.equal(response.status, 413);
+
+  for (const bad of [await post({}, "{no-json"), await post({}, body("boom"))]) {
+    assert.equal(bad.status, 400);
+    const text = await bad.text();
+    assert.ok(!/[A-Za-z]:\\|ENOENT|secret/.test(text), `sin paths en errores: ${text}`);
+  }
+
+  for (const path of ["/", "/state"]) {
+    const res = await fetch(`${baseUrl}${path}`);
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+    assert.match(res.headers.get("content-security-policy") || "", /default-src 'self'/);
+    await res.arrayBuffer();
+  }
+});
 test("startGuardError only blocks finished factories; canvas play uses it", () => {
   assert.match(startGuardError({ status: "done" }), /ya terminó/);
   assert.equal(startGuardError({ status: "running" }), null);
@@ -1242,4 +1313,35 @@ test("issue identity: number/url canonical, normalized title fallback, failed im
   s2.tasks.push(mk(2, "failed"), mk(1, "failed"));
   assert.ok(unclaimedIssues(s2).some((i) => i.number === 1), "el último intento manda");
   assert.equal(s2.tasks.filter((x) => x.status === "failed").length, 4, "el historial de fallos se conserva");
+});
+
+test("canvas writeStatus delegates to atomic saveState and interleaved writes keep state.json parseable", async (t) => {
+  const src = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  assert.match(src, /await saveState\(repoDir, state\)/);
+  assert.doesNotMatch(src, /writeFile/);
+
+  const repo = await mkdtemp(join(tmpdir(), "sf-writestatus-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await saveState(repo, { status: "idle", tasks: [{ id: "t1", status: "open" }], notes: ["keep"] });
+  const statePath = join(repo, ".software-factory", "state.json");
+  // Misma mutación que writeStatus: loadState -> status -> saveState.
+  const writeStatus = async (status) => {
+    const s = await loadState(repo);
+    s.status = status;
+    return saveState(repo, s);
+  };
+  const statuses = ["running", "paused", "running", "paused", "done", "running"];
+  // Secuencial: el rename concurrente sobre un destino abierto da EPERM en Windows.
+  for (let k = 0; k < 5; k++) {
+    for (const s of statuses) {
+      await writeStatus(s);
+      JSON.parse(await readFile(statePath, "utf8"));
+    }
+  }
+  const final = JSON.parse(await readFile(statePath, "utf8"));
+  assert.equal(final.status, statuses.at(-1));
+  assert.deepEqual(final.tasks, [{ id: "t1", status: "open" }]);
+  assert.deepEqual(final.notes, ["keep"]);
+  const leftovers = (await readdir(join(repo, ".software-factory"))).filter((n) => n.endsWith(".tmp"));
+  assert.deepEqual(leftovers, []);
 });
