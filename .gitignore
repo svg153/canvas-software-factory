@@ -1,0 +1,6 @@
+node_modules/
+.software-factory/
+*.log
+.DS_Store
+.impeccable/
+artifacts/

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "software-factory",
+  "description": "Press Play and iterate your repo autonomously: discovery → GSD plan → self-grilling → GitHub issues wired into a Project → implementation → review/audit, in bounded rounds. Canvas control panel + CLI runner + skill for GitHub Copilot.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Sergio Valverde",
+    "url": "https://github.com/svg153"
+  },
+  "homepage": "https://github.com/svg153/software-factory",
+  "repository": "https://github.com/svg153/software-factory",
+  "license": "MIT",
+  "keywords": [
+    "agent-plugins",
+    "agent-skills",
+    "autonomous-iteration",
+    "canvas",
+    "github-copilot",
+    "github-issues",
+    "github-projects",
+    "pipeline",
+    "software-factory",
+    "workflow-automation"
+  ],
+  "extensions": {
+    "com.github.copilot": {
+      "logo": "assets/preview.png"
+    },
+    "com.github.awesome-copilot": {
+      "extensions": [
+        "./extensions/software-factory"
+      ],
+      "skills": [
+        "./skills/software-factory/"
+      ]
+    }
+  }
+}

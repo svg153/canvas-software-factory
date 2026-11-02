@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Software Factory</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --card:#161b22; --line:#30363d; --txt:#e6edf3; --mut:#8b949e;
+          --acc:#3fb950; --warn:#d29922; --run:#58a6ff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--txt); font:14px/1.45 "Segoe UI",system-ui,sans-serif; padding:18px; }
+  header { display:flex; align-items:center; gap:14px; margin-bottom:16px; flex-wrap:wrap; }
+  h1 { font-size:26px; font-family:Consolas,"Cascadia Mono",monospace; letter-spacing:-.02em; }
+  .round { color:var(--mut); font-size:13px; }
+  .btn { border:1px solid var(--line); background:var(--card); color:var(--txt); padding:8px 18px; border-radius:8px; cursor:pointer; font-weight:600; }
+  .btn.play { background:#1a4d2e; border-color:var(--acc); color:#7ee2a0; }
+  .btn.pause { background:#4d2e1a; border-color:var(--warn); color:#e2c07e; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .status { margin-left:auto; padding:4px 12px; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
+  .status.running { color:var(--run); border-color:var(--run); }
+  .status.paused { color:var(--warn); border-color:var(--warn); }
+  .status.done { color:var(--acc); border-color:var(--acc); }
+  .pipeline { display:flex; gap:6px; margin-bottom:18px; flex-wrap:wrap; }
+  .phase { flex:1 1 120px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; position:relative; }
+  .phase.active { border-color:var(--run); box-shadow:0 0 0 1px var(--run); }
+  .phase.donep { border-color:var(--acc); opacity:.85; }
+  .phase b { display:block; font-size:13px; } .phase span { color:var(--mut); font-size:12px; }
+  .grid { display:grid; grid-template-columns:1.2fr .8fr; gap:16px; }
+  @media (max-width:900px){ .grid{grid-template-columns:1fr;} }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .panel h2 { font-size:14px; margin-bottom:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+  .task { display:flex; gap:8px; padding:7px 0; border-bottom:1px dashed var(--line); align-items:baseline; }
+  .task:last-child { border-bottom:0; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .dot.pending{background:var(--mut);} .dot.awaiting_agent{background:var(--run);} .dot.done{background:var(--acc);} .dot.failed{background:#f85149;}
+  .task .t { flex:1; } .task .id { color:var(--mut); font-size:11px; }
+  a { color:var(--run); text-decoration:none; } a:hover { text-decoration:underline; }
+  .issue { padding:6px 0; border-bottom:1px dashed var(--line); }
+  .empty { color:var(--mut); font-style:italic; padding:8px 0; }
+  #log { font-family:Consolas,monospace; font-size:12px; color:var(--mut); max-height:120px; overflow:auto; margin-top:16px; white-space:pre-wrap; }
+  .init { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .init input { background:var(--bg); border:1px solid var(--line); color:var(--txt); padding:6px 8px; border-radius:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏭 Software Factory</h1>
+  <span class="round" id="round">—</span>
+  <button class="btn play" id="play">▶ Play</button>
+  <button class="btn pause" id="pause">⏸ Pausa</button>
+  <span class="status" id="status">sin estado</span>
+</header>
+
+<div class="pipeline" id="pipeline"></div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Tareas de la fase actual</h2>
+    <div id="tasks"><div class="empty">Sin fábrica iniciada.</div></div>
+  </div>
+  <div class="panel">
+    <h2>Issues creadas</h2>
+    <div id="issues"><div class="empty">Ninguna todavía.</div></div>
+    <h2 style="margin-top:14px">Configurar</h2>
+    <div class="init">
+      <input id="ghrepo" placeholder="owner/repo" size="18" />
+      <input id="project" placeholder="Project id (opcional)" size="18" />
+      <input id="rounds" placeholder="rounds" size="6" value="3" />
+      <button class="btn" id="initBtn">Init</button>
+    </div>
+  </div>
+</div>
+
+<pre id="log"></pre>
+
+<script>
+const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
+const PHASE_LABELS = { discover: "Descubrimiento", plan: "Plan GSD", grill: "Grill-me", issues: "Issues + Project", implement: "Implementación", review: "Revisión/Auditoría" };
+const params = new URLSearchParams(location.search);
+const repo = params.get("repo") || "";
+const base = "";
+let lastRound = 0, lastPhase = "";
+
+function log(m) { const el = document.getElementById("log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
+
+function render(s) {
+  const st = document.getElementById("status");
+  st.textContent = s?.status || "sin estado";
+  st.className = "status " + (s?.status || "");
+  document.getElementById("round").textContent = s && s.round ? `round ${s.round} / ${s.max_rounds}` : "";
+  const pipe = document.getElementById("pipeline");
+  pipe.innerHTML = "";
+  const tasksByPhase = {};
+  (s?.tasks || []).forEach(t => { (tasksByPhase[t.phase] ||= []).push(t); });
+  PHASES.forEach((p, i) => {
+    const div = document.createElement("div");
+    const idx = s ? PHASES.indexOf(s.phase) : -1;
+    div.className = "phase" + (s && s.phase === p ? " active" : "") + (s && i < idx ? " donep" : "");
+    const ts = tasksByPhase[p] || [];
+    const done = ts.filter(t => t.status === "done").length;
+    div.innerHTML = `<b>${PHASE_LABELS[p]}</b><span>${ts.length ? `${done}/${ts.length} tareas` : "—"}</span>`;
+    pipe.appendChild(div);
+  });
+  const tasksEl = document.getElementById("tasks");
+  const open = (s?.tasks || []).filter(t => t.phase === s.phase);
+  tasksEl.innerHTML = open.length ? open.map(t =>
+    `<div class="task"><span class="dot ${t.status}"></span><span class="t">${t.title}</span><span class="id">${t.id} · ${t.status}</span></div>`
+  ).join("") : `<div class="empty">Fase ${s?.phase || "—"} sin tareas (pulsa Play o next).</div>`;
+  const issEl = document.getElementById("issues");
+  issEl.innerHTML = (s?.issues || []).length ? s.issues.map(i =>
+    `<div class="issue"><a href="${i.url}" target="_blank">#${i.number || ""} ${i.title}</a></div>`
+  ).join("") : `<div class="empty">Ninguna todavía.</div>`;
+  if (s && s.round !== lastRound) { lastRound = s.round; }
+  if (s && s.phase !== lastPhase) { lastPhase = s.phase; }
+}
+
+async function action(actionName, input = {}) {
+  const r = await fetch("/action", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ actionName, input }),
+  });
+  const j = await r.json();
+  if (j.error) log("⚠ " + j.error); else log("✔ " + (j.status || JSON.stringify(j).slice(0, 120)));
+  return j;
+}
+
+document.getElementById("play").onclick = () => action("play");
+document.getElementById("pause").onclick = () => action("pause");
+document.getElementById("initBtn").onclick = () => action("init", {
+  repo: document.getElementById("ghrepo").value,
+  project: document.getElementById("project").value,
+  rounds: Number(document.getElementById("rounds").value) || 3,
+});
+
+(async () => {
+  try {
+    const s = await (await fetch("/state" + (repo ? `?repo=${encodeURIComponent(repo)}` : ""))).json();
+    render(s.status === "missing" ? null : s);
+    const es = new EventSource("/events" + (repo ? `?repo=${encodeURIComponent(repo)}` : ""));
+    es.onmessage = (e) => render(JSON.parse(e.data));
+    es.onerror = () => { log("conexión SSE perdida, reintentando…"); };
+  } catch (e) { log("error: " + e.message); }
+})();
+</script>
+</body>
+</html>
