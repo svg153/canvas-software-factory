@@ -14,12 +14,12 @@ import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
-import { buildCanvasManifest } from "../../../../tools/make-canvas-manifest.mjs";
+import { buildCanvasManifest } from "../../../../../tools/make-canvas-manifest.mjs";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../");
-const extensionDir = join(repoRoot, "extensions", "software-factory");
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../../");
+const extensionDir = join(repoRoot, "com.github.copilot", "extensions", "software-factory");
 const runnerPath = join(extensionDir, "runner", "sf.mjs");
 
 // El token de acción se obtiene como la UI: leyendo el HTML servido por el propio servidor.
@@ -354,6 +354,29 @@ test("canvas.json is not distributed; the installer generates it from plugin met
   assert.match(installer, /extensions\\software-factory/);
   assert.match(installer, /skills\\software-factory/);
   assert.match(installer, /tools\\make-canvas-manifest\.mjs/);
+});
+
+test("external plugin layout satisfies the awesome-copilot canvas structure gate", async () => {
+  const pluginManifest = await readFile(join(repoRoot, "plugin.json"), "utf8").then(JSON.parse);
+  const allowed = ["$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions"];
+  const extra = Object.keys(pluginManifest).filter((key) => !allowed.includes(key));
+  assert.deepEqual(extra, [], "plugin.json declara campos no permitidos por el esquema Agent Plugins 1.0");
+  assert.ok(pluginManifest.keywords.includes("canvas"), "keywords debe incluir 'canvas' para activar el gate de estructura");
+  // runCanvasStructureGate exige com.github.copilot/extensions/<id>/extension.mjs versionado.
+  await readFile(join(repoRoot, "com.github.copilot", "extensions", "software-factory", "extension.mjs"));
+  // Fuente canónica única: la antigua ruta raíz no debe contener una copia.
+  await assert.rejects(
+    readFile(join(repoRoot, "extensions", "software-factory", "extension.mjs")),
+    "existe una segunda copia de la extensión fuera del namespace",
+  );
+  // Skills descubiertas por convención en skills/ de la raíz del paquete.
+  await readFile(join(repoRoot, "skills", "software-factory", "SKILL.md"));
+  // Logo exactamente en assets/preview.png (convención awesome-copilot).
+  assert.equal(pluginManifest.extensions["com.github.copilot"].logo, "assets/preview.png");
+  // Ningún canvas.json versionado en el árbol distribuido.
+  await assert.rejects(
+    readFile(join(repoRoot, "com.github.copilot", "extensions", "software-factory", "canvas.json")),
+  );
 });
 
 test("POST /action rejects missing or wrong CSRF token and accepts the HTML-exposed one", async (t) => {

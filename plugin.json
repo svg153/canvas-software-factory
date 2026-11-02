@@ -25,14 +25,6 @@
   "extensions": {
     "com.github.copilot": {
       "logo": "assets/preview.png"
-    },
-    "com.github.awesome-copilot": {
-      "extensions": [
-        "./extensions/software-factory"
-      ],
-      "skills": [
-        "./skills/software-factory/"
-      ]
     }
   }
 }

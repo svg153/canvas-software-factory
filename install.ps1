@@ -2,7 +2,7 @@
 .SYNOPSIS
     Instala o actualiza la extensión Software Factory en la app de GitHub Copilot.
 .DESCRIPTION
-    Sincroniza extensions/software-factory/ (canvas + runner + UI) hacia
+    Sincroniza com.github.copilot/extensions/software-factory/ (canvas + runner + UI) hacia
     <COPILOT_HOME>\extensions\software-factory y skills/software-factory/ hacia
     <COPILOT_HOME>\skills\software-factory.
 
@@ -29,23 +29,23 @@ param(
 $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($CopilotHome)) { throw "COPILOT_HOME vacío o no resoluble." }
 
-$extSource = Join-Path $PSScriptRoot "extensions\software-factory"
+$extSource = Join-Path $PSScriptRoot "com.github.copilot\extensions\software-factory"
 $skillSource = Join-Path $PSScriptRoot "skills\software-factory"
 $manifestTool = Join-Path $PSScriptRoot "tools\make-canvas-manifest.mjs"
 
 # --- Validación del origen: nada se escribe si falla -------------------------
 $required = @(
-  "extensions\software-factory\extension.mjs",
-  "extensions\software-factory\index.html",
-  "extensions\software-factory\app.mjs",
-  "extensions\software-factory\ui.mjs",
-  "extensions\software-factory\package.json",
-  "extensions\software-factory\runner\sf.mjs",
-  "extensions\software-factory\runner\lib\actions.mjs",
-  "extensions\software-factory\runner\lib\gh.mjs",
-  "extensions\software-factory\runner\lib\http.mjs",
-  "extensions\software-factory\runner\lib\prompts.mjs",
-  "extensions\software-factory\runner\lib\state.mjs",
+  "com.github.copilot\extensions\software-factory\extension.mjs",
+  "com.github.copilot\extensions\software-factory\index.html",
+  "com.github.copilot\extensions\software-factory\app.mjs",
+  "com.github.copilot\extensions\software-factory\ui.mjs",
+  "com.github.copilot\extensions\software-factory\package.json",
+  "com.github.copilot\extensions\software-factory\runner\sf.mjs",
+  "com.github.copilot\extensions\software-factory\runner\lib\actions.mjs",
+  "com.github.copilot\extensions\software-factory\runner\lib\gh.mjs",
+  "com.github.copilot\extensions\software-factory\runner\lib\http.mjs",
+  "com.github.copilot\extensions\software-factory\runner\lib\prompts.mjs",
+  "com.github.copilot\extensions\software-factory\runner\lib\state.mjs",
   "skills\software-factory\SKILL.md",
   "canvas-meta.json",
   "plugin.json",

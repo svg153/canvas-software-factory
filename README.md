@@ -9,8 +9,8 @@ reviews/audits the round, and repeats for a bounded number of rounds.
 
 | Component | Path | Purpose |
 |---|---|---|
-| Canvas extension | `extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, Play/Pause. Play sends the kick-off prompt to the session agent via `session.send`. |
-| Runner CLI | `extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase and executes the mechanical `issues` phase (`gh issue create` + `gh project item-add`). |
+| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, Play/Pause. Play sends the kick-off prompt to the session agent via `session.send`. |
+| Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase and executes the mechanical `issues` phase (`gh issue create` + `gh project item-add`). |
 | Skill | `skills/software-factory/SKILL.md` | The loop contract the agent follows (phases, subagents, rules). |
 
 Phases: `discover → plan → grill → issues → implement → review` · rounds capped by
@@ -39,6 +39,13 @@ sourced from the matching plugin manifest"), `install.ps1` instead *generates*
 `canvas.json` in the install target from `canvas-meta.json` + `plugin.json` using
 `tools/make-canvas-manifest.mjs`. `plugin.json` at the repository root remains the
 marketplace manifest.
+
+The repo uses the **Agent Plugins 1.0** layout for external distribution: the single
+canonical source of the canvas extension lives under the Copilot namespace
+(`com.github.copilot/extensions/software-factory/extension.mjs`), which is what the
+official canvas structure gate requires when the manifest declares the `canvas`
+keyword; skills are discovered by convention from `skills/` at the package root.
+`tools/check-external-layout.mjs` mirrors that gate locally and runs in CI.
 Use the same command with `-Force` to replace an existing installation (your
 `<repo>/.software-factory/` state and any installed `artifacts/` are preserved),
 then reload extensions in the app (or restart it).
@@ -118,12 +125,14 @@ repo with `--force` (see contract below).
 
 ## Validate
 
-From `extensions/software-factory/`, run `npm test` to execute the built-in Node.js
+From `com.github.copilot/extensions/software-factory/`, run `npm test` to execute the built-in Node.js
 regression tests. Install/maintainability tests (temp `COPILOT_HOME` only, never the
 real install) run with `pwsh -NoProfile -File tests/install-tests.ps1` from the repo
 root. The GitHub Actions workflow also checks the JavaScript syntax, validates the
-plugin, package and `canvas-meta.json` manifests, verifies the extension tree contains
-no `canvas.json`, generates the install-target `canvas.json` with
+plugin, package and `canvas-meta.json` manifests, runs
+`node tools/check-external-layout.mjs` (namespaced canvas entry, no duplicate
+outside the namespace, no versioned `canvas.json`, schema-allowed manifest fields),
+generates the install-target `canvas.json` with
 `tools/make-canvas-manifest.mjs`, and runs the install suite on `windows-latest`.
 
 ## Repo layout notes

@@ -17,13 +17,15 @@ jobs:
           node-version: 20
       - name: Run regression tests
         run: npm test
-        working-directory: extensions/software-factory
+        working-directory: com.github.copilot/extensions/software-factory
       - name: Check JavaScript syntax
-        run: find extensions/software-factory tools -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
+        run: find com.github.copilot tools -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
       - name: Validate manifests
-        run: node --input-type=module -e "import fs from 'node:fs'; for (const path of ['plugin.json', 'extensions/software-factory/package.json', 'canvas-meta.json']) JSON.parse(fs.readFileSync(path, 'utf8'))"
+        run: node --input-type=module -e "import fs from 'node:fs'; for (const path of ['plugin.json', 'com.github.copilot/extensions/software-factory/package.json', 'canvas-meta.json']) JSON.parse(fs.readFileSync(path, 'utf8'))"
+      - name: External plugin layout gate
+        run: node tools/check-external-layout.mjs
       - name: Extension tree must not ship canvas.json
-        run: test ! -e extensions/software-factory/canvas.json
+        run: test ! -e com.github.copilot/extensions/software-factory/canvas.json
       - name: Install-target canvas.json can be generated
         run: |
           mkdir -p "$RUNNER_TEMP/sf-ext"

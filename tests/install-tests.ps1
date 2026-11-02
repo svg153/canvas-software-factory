@@ -40,7 +40,8 @@ function New-SourceSandbox {
   Copy-Item (Join-Path $RepoRoot "install.ps1") $dir
   Copy-Item (Join-Path $RepoRoot "canvas-meta.json") $dir
   Copy-Item (Join-Path $RepoRoot "plugin.json") $dir
-  Copy-Item -Recurse (Join-Path $RepoRoot "extensions") (Join-Path $dir "extensions")
+  New-Item -ItemType Directory -Force (Join-Path $dir "com.github.copilot") | Out-Null
+  Copy-Item -Recurse (Join-Path $RepoRoot "com.github.copilot\extensions") (Join-Path $dir "com.github.copilot\extensions")
   Copy-Item -Recurse (Join-Path $RepoRoot "skills") (Join-Path $dir "skills")
   Copy-Item -Recurse (Join-Path $RepoRoot "tools") (Join-Path $dir "tools")
   return $dir
@@ -72,7 +73,7 @@ It "ningun archivo del repo usa la URL obsoleta del antiguo nombre del repo" {
   Assert-True (-not $bad) "URL obsoleta en: $(($bad | ForEach-Object Path | Sort-Object -Unique) -join ', ')"
 }
 It "el arbol distribuido no versiona canvas.json (convencion awesome-copilot)" {
-  Assert-True (-not (Test-Path (Join-Path $RepoRoot "extensions\software-factory\canvas.json"))) "canvas.json no deberia estar versionado en la extension"
+  Assert-True (-not (Test-Path (Join-Path $RepoRoot "com.github.copilot\extensions\software-factory\canvas.json"))) "canvas.json no deberia estar versionado en la extension"
   Assert-True (Test-Path (Join-Path $RepoRoot "canvas-meta.json")) "falta canvas-meta.json (fuente del manifiesto generado)"
   Assert-True (Test-Path (Join-Path $RepoRoot "tools\make-canvas-manifest.mjs")) "falta tools/make-canvas-manifest.mjs"
 }
@@ -85,21 +86,32 @@ It "el generador produce un canvas.json valido cuyo main resuelve" {
     Assert-True (Test-Path $cpath) "no se genero canvas.json"
     $c = Get-Content $cpath -Raw | ConvertFrom-Json
     Assert-True ($c.id -eq "software-factory") "canvas.json id incorrecto: $($c.id)"
-    Assert-True ($c.main -and (Test-Path (Join-Path $RepoRoot "extensions\software-factory" $c.main))) "main no resuelve: $($c.main)"
+    Assert-True ($c.main -and (Test-Path (Join-Path $RepoRoot "com.github.copilot\extensions\software-factory" $c.main))) "main no resuelve: $($c.main)"
   } finally { Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue }
 }
 It "canvas-meta.json, package.json y plugin.json declaran la misma version" {
   $meta = Get-Content (Join-Path $RepoRoot "canvas-meta.json") -Raw | ConvertFrom-Json
-  $pkg = Get-Content (Join-Path $RepoRoot "extensions\software-factory\package.json") -Raw | ConvertFrom-Json
+  $pkg = Get-Content (Join-Path $RepoRoot "com.github.copilot\extensions\software-factory\package.json") -Raw | ConvertFrom-Json
   $plugin = Get-Content (Join-Path $RepoRoot "plugin.json") -Raw | ConvertFrom-Json
   $metaVersion = if ($meta.version) { $meta.version } else { $plugin.version }
   Assert-True ($metaVersion -eq $pkg.version -and $pkg.version -eq $plugin.version) "versiones desiguales: meta=$metaVersion pkg=$($pkg.version) plugin=$($plugin.version)"
 }
 
+It "el layout externo cumple el gate de estructura de canvas (namespaced)" {
+  $p = Get-Content (Join-Path $RepoRoot "plugin.json") -Raw | ConvertFrom-Json
+  Assert-True ($p.keywords -contains "canvas") "keywords debe incluir 'canvas' para activar el gate"
+  Assert-True (Test-Path (Join-Path $RepoRoot "com.github.copilot\extensions\software-factory\extension.mjs")) "falta com.github.copilot/extensions/software-factory/extension.mjs"
+  Assert-True (-not (Test-Path (Join-Path $RepoRoot "extensions\software-factory\extension.mjs"))) "no debe existir una segunda copia fuera del namespace"
+  Assert-True (Test-Path (Join-Path $RepoRoot "skills\software-factory\SKILL.md")) "falta skills/software-factory/SKILL.md en la raiz del paquete"
+  $allowed = @('$schema','name','version','description','author','homepage','repository','license','keywords','extensions')
+  $extra = @($p.PSObject.Properties.Name | Where-Object { $_ -notin $allowed })
+  Assert-True ($extra.Count -eq 0) "campos no permitidos por Agent Plugins 1.0 en plugin.json: $($extra -join ', ')"
+}
+
 Write-Host "`n== Sintaxis JS (node --check) =="
 It "todos los .mjs de extension y tools compilan" {
   $files = @(
-    Get-ChildItem -Recurse -File (Join-Path $RepoRoot "extensions") -Filter *.mjs
+    Get-ChildItem -Recurse -File (Join-Path $RepoRoot "com.github.copilot") -Filter *.mjs
     Get-ChildItem -Recurse -File (Join-Path $RepoRoot "tools") -Filter *.mjs
   )
   Assert-True ($files.Count -gt 0) "no se encontro ningun .mjs"
