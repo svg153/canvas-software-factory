@@ -149,6 +149,12 @@ repo with `--force` (see contract below).
   *your* account. Note, however, that work orders and result files are agent-written
   text and may quote repository content: review them before committing anywhere. We
   do not guarantee that no secret ever ends up in `.software-factory/`.
+- **Issue bodies are an untrusted data surface.** Anyone who can edit an issue could try
+  to inject instructions into the implementation agent. `implementPrompt` frames issue
+  content between `<<<DATO-DE-ISSUE … DATO-DE-ISSUE>>>` markers (with embedded `<<<`/`>>>`
+  neutralized), tells the agent it is content and not instructions, and requires the
+  agent to check the issue is still open, never read or emit credentials, never merge,
+  and leave the PR for human review.
 - This repo's `.gitignore` covers this repo only. When the factory targets **another**
   repo, `<repo>/.software-factory/` is *not* automatically ignored there — add it to
   that repo's `.gitignore` (or delete the folder) before committing.
