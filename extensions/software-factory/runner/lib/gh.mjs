@@ -6,10 +6,13 @@ import { readFile } from "node:fs/promises";
 const run = promisify(execFile);
 
 async function gh(args, opts = {}) {
-  const { stdout, stderr } = await run("gh", args, { windowsHide: true, ...opts });
-  if (stderr && /error|could not|failed/i.test(stderr)) {
-    throw new Error(`gh ${args[0]}: ${stderr.trim()}`);
-  }
+  // execFile rechaza con exit code != 0 (stderr incluido en el error);
+  // scannear stderr con /error|could not|failed/ falsaba con warnings legitimos de gh.
+  const { stdout } = await run("gh", args, {
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
+    ...opts,
+  });
   return stdout.trim();
 }
 
@@ -36,22 +39,36 @@ export async function createIssuesFromDraft(state, { dryRun = false } = {}) {
     if (!it?.title || existing.has(it.title)) continue;
     const labels = (it.labels || []).flatMap((l) => ["--label", l]);
     const args = [
-      "issue", "create",
-      "--repo", state.repo,
-      "--title", it.title,
-      "--body", it.body || "",
+      "issue",
+      "create",
+      "--repo",
+      state.repo,
+      "--title",
+      it.title,
+      "--body",
+      it.body || "",
       ...labels,
     ];
     if (dryRun) {
       // Los ficticios van SOLO al output: si entran en state.issues, la fase
       // implement crearía work orders contra números de issue inexistentes.
-      created.push({ title: it.title, url: "(dry-run)", number: 900 + created.length + 1, dry: true });
+      created.push({
+        title: it.title,
+        url: "(dry-run)",
+        number: 900 + created.length + 1,
+        dry: true,
+      });
       continue;
     }
     const url = await gh(args);
     const number = Number(url.split("/").pop());
     created.push({ title: it.title, url, number });
-    state.issues.push({ title: it.title, url, number, at: new Date().toISOString() });
+    state.issues.push({
+      title: it.title,
+      url,
+      number,
+      at: new Date().toISOString(),
+    });
     await logAndAdd(state, url);
   }
   return created;
@@ -62,12 +79,17 @@ async function logAndAdd(state, url) {
   const owner = (state.repo || "").split("/")[0] || "@me";
   try {
     await gh([
-      "project", "item-add", state.project_id,
-      "--owner", owner,
-      "--url", url,
+      "project",
+      "item-add",
+      state.project_id,
+      "--owner",
+      owner,
+      "--url",
+      url,
     ]);
   } catch (e) {
     // Project add failures should not break the factory run; surface in note.
-    state.notes = (state.notes || "") + `\nproject add failed for ${url}: ${e.message}`;
+    state.notes =
+      (state.notes || "") + `\nproject add failed for ${url}: ${e.message}`;
   }
 }

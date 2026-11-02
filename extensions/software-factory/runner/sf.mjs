@@ -2,14 +2,26 @@
 // sf.mjs — Software Factory runner CLI.
 // Uso: node sf.mjs <command> <repoPath> [args...]
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
-  loadState, saveState, defaultState, logEvent, paths,
-  newTask, writeWorkOrder, openTasks, PHASES,
+  loadState,
+  saveState,
+  defaultState,
+  logEvent,
+  paths,
+  newTask,
+  writeWorkOrder,
+  openTasks,
+  PHASES,
   hasResult,
 } from "./lib/state.mjs";
 import {
-  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
+  discoverPrompt,
+  planPrompt,
+  grillPrompt,
+  implementPrompt,
+  reviewPrompt,
 } from "./lib/prompts.mjs";
 import { createIssuesFromDraft } from "./lib/gh.mjs";
 
@@ -17,12 +29,18 @@ const [, , cmd, repoArg = ".", ...rest] = process.argv;
 const repoPath = resolve(repoArg);
 const flags = (name) => {
   const i = rest.findIndex((a) => a === `--${name}`);
-  return i >= 0 ? (rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : true) : undefined;
+  return i >= 0
+    ? rest[i + 1] && !rest[i + 1].startsWith("--")
+      ? rest[i + 1]
+      : true
+    : undefined;
 };
 
 function need(state) {
   if (!state) {
-    console.error("Sin state.json. Ejecuta primero: node sf.mjs init <repo> --repo owner/name");
+    console.error(
+      "Sin state.json. Ejecuta primero: node sf.mjs init <repo> --repo owner/name",
+    );
     process.exit(1);
   }
   return state;
@@ -30,12 +48,17 @@ function need(state) {
 
 // Work orders to emit when entering a phase.
 const phasePlan = {
-  discover: (s) => [{ title: `Auditoría del repo (round ${s.round})`, prompt: discoverPrompt }],
+  discover: (s) => [
+    { title: `Auditoría del repo (round ${s.round})`, prompt: discoverPrompt },
+  ],
   plan: (s) => [{ title: `Plan GSD round ${s.round}`, prompt: planPrompt }],
-  grill: (s) => [{ title: `Grill-me al plan round ${s.round}`, prompt: grillPrompt }],
+  grill: (s) => [
+    { title: `Grill-me al plan round ${s.round}`, prompt: grillPrompt },
+  ],
   implement: (s) => {
     const claimed = new Set(
-      s.tasks.filter((t) => t.phase === "implement" && t.meta?.issue?.number)
+      s.tasks
+        .filter((t) => t.phase === "implement" && t.meta?.issue?.number)
         .map((t) => t.meta.issue.number),
     );
     return (s.issues || [])
@@ -46,7 +69,9 @@ const phasePlan = {
         meta: { issue: i },
       }));
   },
-  review: (s) => [{ title: `Revisión + auditoría round ${s.round}`, prompt: reviewPrompt }],
+  review: (s) => [
+    { title: `Revisión + auditoría round ${s.round}`, prompt: reviewPrompt },
+  ],
   issues: () => [], // mechanical phase: no work orders
 };
 
@@ -61,6 +86,12 @@ async function emitTasks(state) {
 }
 
 async function cmdInit() {
+  if (!existsSync(repoPath)) {
+    console.error(
+      `El directorio ${repoPath} no existe. Clona antes el repo y pasa su ruta absoluta.`,
+    );
+    process.exit(1);
+  }
   const repo = flags("repo") || "";
   const project = flags("project") || "";
   const rounds = flags("rounds") || 3;
@@ -69,24 +100,38 @@ async function cmdInit() {
   if (existing && !flags("force")) {
     console.error(
       `Ya existe estado en ${paths(repoPath).root}: fase ${existing.phase}, round ${existing.round}, ` +
-      `${existing.tasks.length} tasks, ${existing.issues.length} issues. ` +
-      `Usa --force para sobrescribir (perderás el progreso).`,
+        `${existing.tasks.length} tasks, ${existing.issues.length} issues. ` +
+        `Usa --force para sobrescribir (perderás el progreso).`,
     );
     process.exit(1);
   }
   const state = defaultState(repoPath, { repo, project, rounds });
   await saveState(repoPath, state);
-  await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
-  console.log(JSON.stringify({ ok: true, sf: paths(repoPath).root, state: "idle" }, null, 2));
+  await logEvent(
+    repoPath,
+    `init repo=${repo} project=${project} rounds=${rounds}`,
+  );
+  console.log(
+    JSON.stringify(
+      { ok: true, sf: paths(repoPath).root, state: "idle" },
+      null,
+      2,
+    ),
+  );
 }
 
 async function cmdStatus() {
   const state = need(await loadState(repoPath));
   const summary = {
-    status: state.status, round: state.round, max_rounds: state.max_rounds,
-    phase: state.phase, phase_index: `${PHASES.indexOf(state.phase) + 1}/${PHASES.length}`,
-    tasks_open: openTasks(state).length, tasks_done: state.tasks.filter((t) => t.status === "done").length,
-    issues_created: state.issues.length, updated_at: state.updated_at,
+    status: state.status,
+    round: state.round,
+    max_rounds: state.max_rounds,
+    phase: state.phase,
+    phase_index: `${PHASES.indexOf(state.phase) + 1}/${PHASES.length}`,
+    tasks_open: openTasks(state).length,
+    tasks_done: state.tasks.filter((t) => t.status === "done").length,
+    issues_created: state.issues.length,
+    updated_at: state.updated_at,
     notes: (state.notes || "").trim(),
   };
   console.log(JSON.stringify(summary, null, 2));
@@ -96,11 +141,18 @@ async function cmdStatus() {
 async function cmdNext() {
   const state = need(await loadState(repoPath));
   if (state.status !== "running") {
-    console.log(JSON.stringify({ status: state.status, hint: "Ejecuta: node sf.mjs start <repo>" }, null, 2));
+    console.log(
+      JSON.stringify(
+        { status: state.status, hint: "Ejecuta: node sf.mjs start <repo>" },
+        null,
+        2,
+      ),
+    );
     return;
   }
   // Si la fase no tiene tareas: si ya tuvo y están done, avanza; si no tuvo, se generan.
-  const hasPhaseTasks = () => state.tasks.some((t) => t.phase === state.phase && t.round === state.round);
+  const hasPhaseTasks = () =>
+    state.tasks.some((t) => t.phase === state.phase && t.round === state.round);
   if (openTasks(state).length === 0) {
     if (hasPhaseTasks()) {
       await advance(state);
@@ -112,23 +164,52 @@ async function cmdNext() {
   }
   const open = openTasks(state);
   if (open.length === 0) {
-    console.log(JSON.stringify({ status: state.status, phase: state.phase, tasks: [] }, null, 2));
+    console.log(
+      JSON.stringify(
+        { status: state.status, phase: state.phase, tasks: [] },
+        null,
+        2,
+      ),
+    );
     return;
   }
   const out = [];
   for (const t of open) {
     let prompt = null;
-    try { prompt = await readFile(t.prompt_file, "utf8"); } catch { /* pending */ }
-    out.push({ id: t.id, phase: t.phase, title: t.title, status: t.status, prompt });
+    try {
+      prompt = await readFile(t.prompt_file, "utf8");
+    } catch {
+      /* pending */
+    }
+    out.push({
+      id: t.id,
+      phase: t.phase,
+      title: t.title,
+      status: t.status,
+      prompt,
+    });
   }
   await saveState(repoPath, state);
-  console.log(JSON.stringify({ status: state.status, round: state.round, phase: state.phase, tasks: out }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        status: state.status,
+        round: state.round,
+        phase: state.phase,
+        tasks: out,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 async function advance(state) {
   const p = paths(state.repo_path);
   if (state.phase === "issues") {
-    const created = await createIssuesFromDraft(state, { dryRun: Boolean(flags("dry-run")) });
+    const created = await createIssuesFromDraft(state, {
+      dryRun: Boolean(flags("dry-run")),
+    });
     await logEvent(state.repo_path, `issues phase: ${created.length} issues`);
   }
   if (state.phase === "review") {
@@ -136,7 +217,10 @@ async function advance(state) {
     if (state.round > state.max_rounds) {
       state.status = "done";
       state.phase = "review";
-      await logEvent(state.repo_path, `factory done tras ${state.max_rounds} rounds`);
+      await logEvent(
+        state.repo_path,
+        `factory done tras ${state.max_rounds} rounds`,
+      );
       await saveState(state.repo_path, state);
       return;
     }
@@ -147,7 +231,10 @@ async function advance(state) {
   }
   const idx = PHASES.indexOf(state.phase);
   state.phase = PHASES[idx + 1] || PHASES[0];
-  await logEvent(state.repo_path, `fase -> ${state.phase} (round ${state.round})`);
+  await logEvent(
+    state.repo_path,
+    `fase -> ${state.phase} (round ${state.round})`,
+  );
   await saveState(state.repo_path, state);
 }
 
@@ -155,7 +242,10 @@ async function cmdComplete() {
   const [taskId, ...extra] = rest;
   const state = need(await loadState(repoPath));
   const t = state.tasks.find((x) => x.id === taskId);
-  if (!t) { console.error(`task ${taskId} no existe`); process.exit(1); }
+  if (!t) {
+    console.error(`task ${taskId} no existe`);
+    process.exit(1);
+  }
   const fail = extra.includes("--fail");
   // Contract de la skill: cerrar "done" exige informe escrito en result_file.
   if (!fail && !extra.includes("--force") && !(await hasResult(t))) {
@@ -169,7 +259,18 @@ async function cmdComplete() {
   await logEvent(repoPath, `task ${taskId} -> ${t.status}`);
   await saveState(repoPath, state);
   const remaining = openTasks(state);
-  console.log(JSON.stringify({ ok: true, task: taskId, status: t.status, open_in_phase: remaining.length }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        task: taskId,
+        status: t.status,
+        open_in_phase: remaining.length,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 async function cmdSetStatus(next) {
@@ -178,27 +279,51 @@ async function cmdSetStatus(next) {
   if (next === "running" && !openTasks(state).length) await emitTasks(state);
   await logEvent(repoPath, `status -> ${next}`);
   await saveState(repoPath, state);
-  console.log(JSON.stringify({ ok: true, status: state.status, phase: state.phase }, null, 2));
+  console.log(
+    JSON.stringify(
+      { ok: true, status: state.status, phase: state.phase },
+      null,
+      2,
+    ),
+  );
 }
 
 async function cmdIssues() {
   const state = need(await loadState(repoPath));
-  const created = await createIssuesFromDraft(state, { dryRun: Boolean(flags("dry-run")) });
+  const created = await createIssuesFromDraft(state, {
+    dryRun: Boolean(flags("dry-run")),
+  });
   await logEvent(repoPath, `issues manual: ${created.length}`);
   await saveState(repoPath, state);
-  console.log(JSON.stringify({ ok: true, created: created.length, urls: created }, null, 2));
+  console.log(
+    JSON.stringify(
+      { ok: true, created: created.length, urls: created },
+      null,
+      2,
+    ),
+  );
 }
 
 async function main() {
   switch (cmd) {
-    case "init": return cmdInit();
-    case "status": return cmdStatus();
-    case "next": return cmdNext();
-    case "complete": return cmdComplete();
-    case "start": return cmdSetStatus("running");
-    case "pause": return cmdSetStatus("paused");
-    case "issues": return cmdIssues();
-    case "advance": { const s = need(await loadState(repoPath)); return advance(s); }
+    case "init":
+      return cmdInit();
+    case "status":
+      return cmdStatus();
+    case "next":
+      return cmdNext();
+    case "complete":
+      return cmdComplete();
+    case "start":
+      return cmdSetStatus("running");
+    case "pause":
+      return cmdSetStatus("paused");
+    case "issues":
+      return cmdIssues();
+    case "advance": {
+      const s = need(await loadState(repoPath));
+      return advance(s);
+    }
     default:
       console.log(`sf.mjs — Software Factory runner
 Comandos:
@@ -210,4 +335,7 @@ Comandos:
   }
 }
 
-main().catch((e) => { console.error("ERROR:", e.message); process.exit(1); });
+main().catch((e) => {
+  console.error("ERROR:", e.message);
+  process.exit(1);
+});

@@ -83,7 +83,6 @@ const ACTION_TOKEN = "__SF_ACTION_TOKEN__";
 // Los títulos de tareas/issues son output del agente: nunca inyectarlos crudos en innerHTML.
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const safeUrl = (u) => (/^https?:\/\//.test(String(u || "")) ? esc(u) : "#");
-let lastRound = 0, lastPhase = "";
 
 function log(m) { const el = document.getElementById("log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
 
@@ -114,8 +113,6 @@ function render(s) {
   issEl.innerHTML = (s?.issues || []).length ? s.issues.map(i =>
     `<div class="issue"><a href="${safeUrl(i.url)}" target="_blank" rel="noopener">#${esc(i.number || "")} ${esc(i.title)}</a></div>`
   ).join("") : `<div class="empty">Ninguna todavía.</div>`;
-  if (s && s.round !== lastRound) { lastRound = s.round; }
-  if (s && s.phase !== lastPhase) { lastPhase = s.phase; }
 }
 
 async function action(actionName, input = {}) {

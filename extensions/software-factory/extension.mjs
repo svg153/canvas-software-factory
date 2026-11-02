@@ -1,27 +1,26 @@
 // Software Factory canvas — panel de control de la fábrica.
 // Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
-import { readFile, writeFile, mkdir, watch } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
+import {
+  CanvasError,
+  createCanvas,
+  joinSession,
+} from "@github/copilot-sdk/extension";
+import { paths as sfPaths } from "./runner/lib/state.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, "runner", "sf.mjs");
-const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
 const subscribers = new Map();
 let session;
 // Token servido solo en el HTML del canvas (misma origin): bloqueo CSRF desde
 // otras páginas web que pudieran hacer POST al puerto localhost a ciegas.
 const ACTION_TOKEN = randomUUID();
-
-function sfPaths(repoDir) {
-  const root = join(repoDir, ".software-factory");
-  return { root, state: join(root, "state.json") };
-}
 
 async function readState(repoDir) {
   try {
@@ -34,7 +33,11 @@ async function readState(repoDir) {
 async function writeStatus(repoDir, status) {
   const p = sfPaths(repoDir);
   const state = await readState(repoDir);
-  if (!state) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
+  if (!state)
+    throw new CanvasError(
+      "sf_no_state",
+      "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo",
+    );
   state.status = status;
   state.updated_at = new Date().toISOString();
   await mkdir(p.root, { recursive: true });
@@ -58,16 +61,22 @@ function factoryPrompt(repoDir, state) {
 }
 
 // Polling del state.json por repo para re-broadcast SSE.
+// El timer se auto-libera cuando el repo se queda sin suscriptores SSE
+// (antes cada repo observado consumía un interval para siempre).
 const watchers = new Map();
 function ensureWatch(repoDir) {
   if (watchers.has(repoDir)) return;
   const timer = setInterval(async () => {
+    const subs = subscribers.get(repoDir);
+    if (!subs || subs.size === 0) {
+      clearInterval(timer);
+      watchers.delete(repoDir);
+      return;
+    }
     const state = await readState(repoDir);
     if (state) broadcast(repoDir, state);
   }, 2500);
   watchers.set(repoDir, timer);
-  // watch() es opcional; polling basta en V0.
-  watch(join(sfPaths(repoDir).root, "state.json"), () => {}).catch(() => {});
 }
 
 function broadcast(repoDir, state) {
@@ -90,7 +99,10 @@ async function applyAction(repoDir, actionName, input = {}) {
   if (actionName === "play") {
     const state = await writeStatus(repoDir, "running");
     if (session) await session.send({ prompt: factoryPrompt(repoDir, state) });
-    return { status: "Fábrica lanzada — el agente recibió el prompt de arranque", state };
+    return {
+      status: "Fábrica lanzada — el agente recibió el prompt de arranque",
+      state,
+    };
   }
   if (actionName === "pause") {
     const state = await writeStatus(repoDir, "paused");
@@ -103,16 +115,23 @@ async function applyAction(repoDir, actionName, input = {}) {
     if (input.rounds) args.push("--rounds", String(input.rounds));
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, ...args], { windowsHide: true });
+    const out = await promisify(execFile)("node", [RUNNER, ...args], {
+      windowsHide: true,
+    });
     return { status: "inicializado", output: out.stdout.trim() };
   }
   if (actionName === "next") {
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, "next", repoDir], { windowsHide: true });
+    const out = await promisify(execFile)("node", [RUNNER, "next", repoDir], {
+      windowsHide: true,
+    });
     return JSON.parse(out.stdout.trim());
   }
-  throw new CanvasError("sf_unknown_action", `Acción desconocida: ${actionName}`);
+  throw new CanvasError(
+    "sf_unknown_action",
+    `Acción desconocida: ${actionName}`,
+  );
 }
 
 function repoFromReq(req) {
@@ -124,7 +143,10 @@ function repoFromReq(req) {
 const server = http.createServer(async (req, res) => {
   try {
     const repoDir = repoFromReq(req);
-    if (req.method === "GET" && (req.url === "/" || req.url?.startsWith("/?"))) {
+    if (
+      req.method === "GET" &&
+      (req.url === "/" || req.url?.startsWith("/?"))
+    ) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       const html = await readFile(join(__dirname, "index.html"), "utf8");
       res.end(html.replace("__SF_ACTION_TOKEN__", ACTION_TOKEN));
@@ -139,7 +161,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url?.startsWith("/events")) {
       ensureWatch(repoDir);
-      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
       const state = await readState(repoDir);
       res.write(`data: ${JSON.stringify(state || { status: "missing" })}\n\n`);
       if (!subscribers.has(repoDir)) subscribers.set(repoDir, new Set());
@@ -158,7 +184,11 @@ const server = http.createServer(async (req, res) => {
         req.on("data", (c) => (data += c));
         req.on("end", () => resolve(data ? JSON.parse(data) : {}));
       });
-      const result = await applyAction(repoDir, body.actionName, body.input || {});
+      const result = await applyAction(
+        repoDir,
+        body.actionName,
+        body.input || {},
+      );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
       return;
@@ -167,7 +197,11 @@ const server = http.createServer(async (req, res) => {
     res.end();
   } catch (error) {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }));
+    res.end(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
   }
 });
 
@@ -182,7 +216,11 @@ const factoryCanvas = createCanvas({
   inputSchema: {
     type: "object",
     properties: {
-      repo: { type: "string", description: "Ruta absoluta del repo (por defecto, el workspace de la sesión)." },
+      repo: {
+        type: "string",
+        description:
+          "Ruta absoluta del repo (por defecto, el workspace de la sesión).",
+      },
       title: { type: "string" },
     },
   },
@@ -191,26 +229,37 @@ const factoryCanvas = createCanvas({
       name: "get_state",
       description: "Devuelve el estado de la fábrica (state.json).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "get_state");
+        return applyAction(
+          input?.repo || session?.workspacePath || process.cwd(),
+          "get_state",
+        );
       },
     },
     {
       name: "play",
-      description: "Pone la fábrica en running y envía al agente el prompt de arranque del bucle.",
+      description:
+        "Pone la fábrica en running y envía al agente el prompt de arranque del bucle.",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "play");
+        return applyAction(
+          input?.repo || session?.workspacePath || process.cwd(),
+          "play",
+        );
       },
     },
     {
       name: "pause",
       description: "Pausa la fábrica (status=paused).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "pause");
+        return applyAction(
+          input?.repo || session?.workspacePath || process.cwd(),
+          "pause",
+        );
       },
     },
     {
       name: "init_factory",
-      description: "Inicializa .software-factory en el repo (owner/repo, project id, rounds).",
+      description:
+        "Inicializa .software-factory en el repo (owner/repo, project id, rounds).",
       inputSchema: {
         type: "object",
         properties: {
@@ -222,14 +271,22 @@ const factoryCanvas = createCanvas({
       },
       handler({ input }) {
         const repoDir = input?.repo || session?.workspacePath || process.cwd();
-        return applyAction(repoDir, "init", { github_repo: input?.github_repo, project: input?.project, rounds: input?.rounds });
+        return applyAction(repoDir, "init", {
+          github_repo: input?.github_repo,
+          project: input?.project,
+          rounds: input?.rounds,
+        });
       },
     },
     {
       name: "next_work",
-      description: "Pide al runner la siguiente tanda de work orders (fase actual).",
+      description:
+        "Pide al runner la siguiente tanda de work orders (fase actual).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "next");
+        return applyAction(
+          input?.repo || session?.workspacePath || process.cwd(),
+          "next",
+        );
       },
     },
   ],

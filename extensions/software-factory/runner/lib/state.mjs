@@ -1,10 +1,22 @@
 // Software Factory runner — state machine shared by the CLI and the canvas.
 // Lives in <repo>/.software-factory/
-import { mkdir, readFile, writeFile, appendFile, readdir } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  appendFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 export const SF_DIR = ".software-factory";
-export const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
+export const PHASES = [
+  "discover",
+  "plan",
+  "grill",
+  "issues",
+  "implement",
+  "review",
+];
 
 export function paths(repoPath) {
   const root = join(repoPath, SF_DIR);
@@ -32,6 +44,7 @@ export function defaultState(repoPath, opts = {}) {
     phase: "discover",
     tasks: [],
     issues: [],
+    notes: "", // avisos no-fatals (p.ej. project add failed); visible en status
     updated_at: nowIso(),
   };
 }
@@ -60,13 +73,11 @@ export async function logEvent(repoPath, msg) {
   await appendFile(p.log, `[${nowIso()}] ${msg}\n`);
 }
 
-export function taskById(state, id) {
-  return state.tasks.find((t) => t.id === id);
-}
-
 export function openTasks(state, phase = state.phase) {
   // done y failed cierran la tarea: si no, una task fallida bloquea el avance de fase para siempre.
-  return state.tasks.filter((t) => t.phase === phase && t.status !== "done" && t.status !== "failed");
+  return state.tasks.filter(
+    (t) => t.phase === phase && t.status !== "done" && t.status !== "failed",
+  );
 }
 
 let seq = 0;
@@ -100,13 +111,5 @@ export async function hasResult(task) {
     return true;
   } catch {
     return false;
-  }
-}
-
-export async function listPendingFiles(dir) {
-  try {
-    return (await readdir(dir)).filter((f) => f.endsWith(".md"));
-  } catch {
-    return [];
   }
 }
