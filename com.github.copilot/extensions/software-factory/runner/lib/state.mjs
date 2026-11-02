@@ -85,16 +85,33 @@ export function failedTasks(state, phase = state.phase, round = state.round) {
   return state.tasks.filter((t) => t.phase === phase && t.round === round && t.status === "failed");
 }
 
-export function unclaimedIssues(state) {
-  const claimed = new Set(
-    state.tasks
-      .filter((task) => task.phase === "implement")
-      .map((task) => task.issue?.number || task.meta?.issue?.number)
-      .filter(Boolean),
-  );
-  return (state.issues || []).filter((issue) => issue.number && !claimed.has(issue.number));
+export function normTitle(title) {
+  return String(title ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+// Identidad canónica: number/url; el título normalizado solo es fallback.
+export function sameIssue(a, b) {
+  if (!a || !b) return false;
+  if (a.number && b.number) return Number(a.number) === Number(b.number);
+  if (a.url && b.url && a.url !== "(dry-run)" && b.url !== "(dry-run)") return a.url === b.url;
+  const ta = normTitle(a.title);
+  return ta !== "" && ta === normTitle(b.title);
+}
+
+// Una issue es reclamable si no tiene tarea implement, o si la última terminó en failed.
+// done (o una tarea aún viva) la mantiene excluida; el historial de fallos se conserva.
+export function unclaimedIssues(state) {
+  const latest = new Map();
+  for (const task of state.tasks.filter((t) => t.phase === "implement")) {
+    const n = task.issue?.number || task.meta?.issue?.number;
+    if (n) latest.set(Number(n), task);
+  }
+  return (state.issues || []).filter((issue) => {
+    if (!issue.number) return false;
+    const task = latest.get(Number(issue.number));
+    return !task || task.status === "failed";
+  });
+}
 let seq = 0;
 export function newTask(state, phase, title) {
   seq = state.tasks.length;
