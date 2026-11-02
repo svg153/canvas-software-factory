@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Cross-platform Software Factory installer (runner + skill per harness). Node 20+, no deps.
+// Usage: sf-install.mjs --harness <copilot|claude|codex|opencode|generic> [--home DIR] [--dry-run] [--check]
+//   --check: read-only; reports DRIFT and 'STALE: <path>' for installed runner files no longer in the repo (exit 1).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -131,6 +133,14 @@ function install(plan, dryRun, log) {
   }
 }
 
+// Files under the owned runner dir that the current plan no longer ships. Read-only.
+function staleFiles(plan) {
+  const dir = plan.t.runnerDir;
+  if (!fs.existsSync(dir)) return [];
+  const expected = new Set(plan.actions.filter((x) => x.type === 'copy').map((x) => path.resolve(x.dest)));
+  return listFiles(dir).filter((rel) => !expected.has(path.resolve(dir, ...rel.split('/')))).map((rel) => path.join(dir, ...rel.split('/')));
+}
+
 function check(plan, harness, home, log) {
   const markerPath = path.join(plan.t.markerDir, MARKER);
   const reinstall = `node tools/sf-install.mjs --harness ${harness}${home ? ` --home "${home}"` : ''}`;
@@ -153,9 +163,13 @@ function check(plan, harness, home, log) {
       if (!cur.includes(skillBlock().trimEnd())) diffs.push(`bloque obsoleto o ausente en ${plan.t.agentsFile}`);
     }
   }
-  if (!diffs.length) { log(`OK: ${harness} al dia (version ${plan.marker.version})`); return 0; }
-  log(`DRIFT en ${harness}:`);
-  diffs.forEach((d) => log(`  - ${d}`));
+  const stale = staleFiles(plan);
+  if (!diffs.length && !stale.length) { log(`OK: ${harness} al dia (version ${plan.marker.version})`); return 0; }
+  if (diffs.length) {
+    log(`DRIFT en ${harness}:`);
+    diffs.forEach((d) => log(`  - ${d}`));
+  }
+  stale.forEach((s) => log(`STALE: ${s}`));
   log(`Reinstala con: ${reinstall}`);
   return 1;
 }

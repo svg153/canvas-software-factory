@@ -31,7 +31,7 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 
 ```bash
 node tools/sf-install.mjs --harness <copilot|claude|codex|opencode|generic> [--home DIR] [--dry-run]
-node tools/sf-install.mjs --harness <x> --check   # exit 1 + reinstall hint if the installed copy drifts from plugin.json
+node tools/sf-install.mjs --harness <x> --check   # read-only; also prints `STALE: <path>` for installed runner files no longer in the repo (never deletes); exit 1 + reinstall hint if the installed copy drifts from plugin.json
 ```
 
 It copies the dependency-free runner plus `SKILL.md` to the harness convention
