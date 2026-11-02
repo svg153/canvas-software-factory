@@ -469,6 +469,22 @@ test("the vendored schema validator rejects manifests the old key-list check wou
   assert.ok(validateAgainstSchema(good, { type: "object", unknownKeyword: true }, "$").some((e) => /no soportada/.test(e)), "palabras no soportadas fallan en abierto");
 });
 
+test("vendored schema ships its Apache-2.0 license copy and third-party notice", async () => {
+  // Cumplimiento de licencia antes de publicar: el esquema vendido es Apache-2.0
+  // (agentplugins/agent-plugins-spec); su copia y el aviso de terceros deben
+  // versionarse junto a él. El código propio sigue siendo MIT (LICENSE raíz).
+  const schemaDir = join(repoRoot, "tools", "schemas");
+  assert.ok(existsSync(join(schemaDir, "agent-plugins-1.0.0.plugin.schema.json")), "el esquema vendido debe existir");
+  const license = await readFile(join(schemaDir, "LICENSE-Apache-2.0.txt"), "utf8");
+  assert.match(license, /Apache License\s*\n\s*Version 2\.0/, "copia textual de Apache-2.0");
+  const notice = await readFile(join(schemaDir, "NOTICE.md"), "utf8");
+  assert.match(notice, /agentplugins\/agent-plugins-spec/, "NOTICE identifica el proyecto de origen");
+  assert.match(notice, /schemas\/1\.0\.0\/plugin\.schema\.json/, "NOTICE identifica la ruta upstream");
+  assert.match(notice, /agent-plugins-1\.0\.0\.plugin\.schema\.json/, "NOTICE identifica el archivo vendido");
+  assert.match(notice, /Apache License 2\.0|Apache-2\.0/, "NOTICE declara la licencia Apache-2.0");
+  assert.match(notice, /MIT/, "NOTICE preserva la licencia MIT del código propio");
+});
+
 test("POST /action rejects missing or wrong CSRF token and accepts the HTML-exposed one", async (t) => {
   const applied = [];
   const server = createFactoryServer({

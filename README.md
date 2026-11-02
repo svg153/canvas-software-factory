@@ -51,7 +51,11 @@ the vendored copy of the official Agent Plugins 1.0.0 schema
 (`tools/schemas/agent-plugins-1.0.0.plugin.schema.json`) using a dependency-free
 minimal validator covering exactly the keywords that schema uses (unsupported
 keywords fail loudly). It does not run the full official awesome-copilot gate and
-does not claim to.
+does not claim to. That vendored schema is Apache-2.0 licensed material from
+`agentplugins/agent-plugins-spec`; a verbatim copy of the license
+(`tools/schemas/LICENSE-Apache-2.0.txt`) and a third-party notice
+(`tools/schemas/NOTICE.md`) ship beside it, and a regression test checks they are
+present. Everything else in this repo remains MIT.
 Use the same command with `-Force` to replace an existing installation (your
 `<repo>/.software-factory/` state and any installed `artifacts/` are preserved),
 then reload extensions in the app (or restart it).
@@ -161,4 +165,6 @@ generates the install-target `canvas.json` with
 
 This is a standalone repo on purpose: the plugin bundles a canvas extension with its
 runner and has its own release cadence. It can still be listed from a marketplace
-(`marketplace.json`) like sibling plugins. MIT licensed.
+(`marketplace.json`) like sibling plugins. MIT licensed, except the vendored
+Agent Plugins schema under `tools/schemas/` which is Apache-2.0 (see
+`tools/schemas/NOTICE.md`).
