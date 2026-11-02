@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Release workflow (`release.yml`), `tools/check-release.mjs` and `tools/bump-version.mjs`.
+- `install.ps1 -Check` detects stale installations (version, files, skill drift).
+- SECURITY, CONTRIBUTING, CODEOWNERS, issue/PR templates; `engines.node >=20`.
+
 ## v0.1.1
 
 ### Fixed

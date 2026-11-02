@@ -174,7 +174,19 @@ awesome-copilot gate is not executed here),
 generates the install-target `canvas.json` with
 `tools/make-canvas-manifest.mjs`, and runs the install suite on `windows-latest`.
 
+## Governance & releases
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the release process (merge a version bump to
+`main` and `release.yml` tags and publishes it, verifying versions, CHANGELOG and the
+skill) and the branch-protection checklist for maintainers, and [SECURITY.md](SECURITY.md)
+for vulnerability reporting. Check an installation against the repo with
+`.\install.ps1 -Check` (exit 1 on drift). Branch protection on `main` is configured in
+repo settings, not in code.
+
 ## Limitations (verified, not promised)
+
+- No `package-lock.json` is committed (the runner uses only Node built-ins; the SDK
+  dependency is pinned exactly and `engines.node >=20` is declared).
 
 - The installer updates files in place but does not remove files deleted upstream; a
   file that no longer exists in the source can linger in the install target.

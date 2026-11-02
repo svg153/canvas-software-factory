@@ -9,7 +9,7 @@ import { createFactoryServer } from "./runner/lib/http.mjs";
 import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
 import { initRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
-import { saveState } from "./runner/lib/state.mjs";
+import { updateState } from "./runner/lib/state.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, "runner", "sf.mjs");
@@ -31,10 +31,11 @@ async function readState(repoDir) {
 }
 
 async function writeStatus(repoDir, status) {
-  const state = await readState(repoDir);
-  if (!state) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
-  state.status = status;
-  await saveState(repoDir, state);
+  const state = await updateState(repoDir, (current) => {
+    if (!current) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
+    current.status = status;
+    return current;
+  });
   broadcast(repoDir, state);
   return state;
 }
