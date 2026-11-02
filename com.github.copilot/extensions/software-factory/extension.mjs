@@ -1,6 +1,6 @@
 // Software Factory canvas — panel de control de la fábrica.
 // Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +8,7 @@ import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/exte
 import { createFactoryServer } from "./runner/lib/http.mjs";
 import { initRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
+import { saveState } from "./runner/lib/state.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, "runner", "sf.mjs");
@@ -29,13 +30,10 @@ async function readState(repoDir) {
 }
 
 async function writeStatus(repoDir, status) {
-  const p = sfPaths(repoDir);
   const state = await readState(repoDir);
   if (!state) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
   state.status = status;
-  state.updated_at = new Date().toISOString();
-  await mkdir(p.root, { recursive: true });
-  await writeFile(p.state, JSON.stringify(state, null, 2));
+  await saveState(repoDir, state);
   broadcast(repoDir, state);
   return state;
 }
