@@ -75,7 +75,7 @@ and copy `skills/software-factory/` to `<COPILOT_HOME>/skills/software-factory/`
 
 **Option C — awesome-copilot:** once accepted as an external plugin, install it from
 the catalog with one click. To propose it, open an external-plugin submission issue in
-`github/awesome-copilot` pointing at a release tag + commit SHA of this repo.
+`github/awesome-copilot` pointing at the release tag `v0.1.1` and the commit SHA it resolves to (`git rev-parse v0.1.1^{commit}`).
 
 ## Use
 
@@ -181,6 +181,10 @@ generates the install-target `canvas.json` with
 - `install.ps1` uses Windows-style paths; on Linux/macOS use the manual install.
 - Canvas discovery relies on the generated `canvas.json` and the app's extension host,
   which this repo does not ship or control.
+- El servidor loopback del canvas valida `Host` (solo `127.0.0.1:<puerto>`/`localhost:<puerto>`),
+  rechaza `Origin` externo o `Sec-Fetch-Site: cross-site` en `POST /action`, limita el body a
+  64 KB, envía `X-Content-Type-Options: nosniff` y CSP, y no expone rutas locales en errores.
+  No es autenticación de usuario: cualquier proceso local sigue pudiendo leer el token del HTML.
 
 ## Repo layout notes
 
