@@ -2,6 +2,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
+import { sameIssue } from "./state.mjs";
 
 const run = promisify(execFile);
 
@@ -68,8 +69,9 @@ export async function createIssuesFromDraft(state, {
     "utf8",
   ).catch(() => '{"issues":[]}');
   const draft = JSON.parse(draftRaw);
-  const existing = new Set(state.issues.map((i) => i.title));
-  const pending = (draft.issues || []).filter((it) => it?.title && !existing.has(it.title));
+  const known = [...state.issues];
+  const isKnown = (it) => known.some((k) => sameIssue(k, it));
+  const pending = (draft.issues || []).filter((it) => it?.title && !isKnown(it));
   // Valida el slug antes de crear nada (también en dry-run): config inválida = fallo
   // accionable inmediato, nunca operación sobre el cwd del runner.
   if (pending.length > 0) repoSlug(state);
@@ -101,10 +103,10 @@ export async function createIssuesFromDraft(state, {
   let nextFakeNumber = state.issues.reduce((max, i) => Math.max(max, Number(i.number) || 0), 900);
 
   for (const it of draft.issues || []) {
-    if (!it?.title || existing.has(it.title)) continue;
+    if (!it?.title || isKnown(it)) continue;
     // Deduplicación DENTRO de la invocación (dry y real): dos títulos iguales en el
     // mismo draft se procesan una sola vez, no solo contra lo ya persistido.
-    existing.add(it.title);
+    known.push({ number: it.number, url: it.url, title: it.title });
     const wanted = Array.isArray(it.labels) ? it.labels : [];
     const usable = dryRun ? wanted : [];
     if (!dryRun) for (const l of wanted) if (await ensureLabel(l)) usable.push(l);

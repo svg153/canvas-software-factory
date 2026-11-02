@@ -1282,6 +1282,39 @@ test("init refuses a repo directory that does not exist", async (t) => {
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
 });
 
+test("issue identity: number/url canonical, normalized title fallback, failed implement re-claimable", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-identity-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  const calls = [];
+  const runGh = async (args) => {
+    calls.push(args);
+    return `https://github.com/org/repo/issues/${40 + calls.length}`;
+  };
+  const state = {
+    repo_path: tempDir, repo: "org/repo", issues: [
+      { title: "Fix  Login Bug", url: "https://github.com/org/repo/issues/7", number: 7 },
+    ], tasks: [],
+  };
+  const draft = (issues) => writeFile(join(tempDir, ".software-factory", "issues-draft.json"), JSON.stringify({ issues }));
+
+  await draft([
+    { title: "fix login bug" }, // mismo título normalizado
+    { title: "Totally reworded", number: 7 }, // misma identidad por número
+    { title: "Login bug follow-up" }, // similar pero distinta
+  ]);
+  const created = await createIssuesFromDraft(state, { runGh });
+  assert.deepEqual(created.map((c) => c.title), ["Login bug follow-up"]);
+
+  const mk = (number, status) => ({ phase: "implement", status, issue: { number } });
+  const s2 = { issues: [{ number: 1, title: "a" }, { number: 2, title: "b" }, { number: 3, title: "c" }, { number: 4, title: "d" }],
+    tasks: [mk(1, "done"), mk(2, "failed"), mk(3, "failed"), mk(3, "awaiting_agent")] };
+  assert.deepEqual(unclaimedIssues(s2).map((i) => i.number), [2, 4]);
+  s2.tasks.push(mk(2, "failed"), mk(1, "failed"));
+  assert.ok(unclaimedIssues(s2).some((i) => i.number === 1), "el último intento manda");
+  assert.equal(s2.tasks.filter((x) => x.status === "failed").length, 4, "el historial de fallos se conserva");
+});
+
 test("canvas writeStatus delegates to locked updateState and interleaved writes keep state.json parseable", async (t) => {
   const src = await readFile(join(extensionDir, "extension.mjs"), "utf8");
   assert.match(src, /await updateState\(repoDir,/);
