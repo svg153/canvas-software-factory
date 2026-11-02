@@ -188,9 +188,11 @@ const factoryCanvas = createCanvas({
   ],
   async open({ instanceId, input }) {
     // Abrir el canvas con una ruta es la autorización explícita de esa raíz.
-    if (input?.repo) allowlist.authorize(input.repo);
+    // Sin input.repo usamos el workspace de la sesión: si no, el panel caería en
+    // process.cwd() (el dir de session-state) y gestionaría el directorio equivocado.
+    const repoDir = input?.repo ? allowlist.authorize(input.repo) : (session?.workspacePath || "");
     return {
-      url: `${baseUrl}/?instanceId=${encodeURIComponent(instanceId)}&repo=${encodeURIComponent(input?.repo || "")}`,
+      url: `${baseUrl}/?instanceId=${encodeURIComponent(instanceId)}&repo=${encodeURIComponent(repoDir)}`,
       title: input?.title || "Software Factory",
       status: "listo",
     };

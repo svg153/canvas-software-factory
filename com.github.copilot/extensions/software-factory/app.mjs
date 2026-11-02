@@ -35,6 +35,8 @@ document.getElementById("initBtn").onclick = () => action("init", createInitPayl
 
 try {
   const state = await (await fetch(routeWithRepo("/state", repo))).json();
+  const repoPathEl = document.getElementById("repopath");
+  if (repoPathEl) repoPathEl.textContent = `📁 ${state.repo || repo}`;
   renderState(state.status === "missing" ? null : state);
   const events = new EventSource(routeWithRepo("/events", repo));
   events.onmessage = (event) => renderState(JSON.parse(event.data));
