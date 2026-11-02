@@ -26,7 +26,8 @@ en `<repo>/.software-factory/state.json`. Tú eres el **motor cognitivo**: ejecu
    - Marca `node <runner>/sf.mjs complete <repoPath> <taskId>`.
 4. Repite 2–3. Cuando la fase se vacía, el runner avanza solo a la siguiente:
    - `issues` es mecánica: el runner ejecuta `gh issue create` + `gh project item-add`
-     con `<repo>/.software-factory/issues-draft.json`. NO la trabajes tú.
+     con `<repo>/.software-factory/issues-draft.json`. NO la trabajes tú. Si el Project
+     pertenece a un owner distinto del repo, inicializa con `--project-owner <owner>`.
    - Tras `review`, el runner abre el siguiente round o termina (`max_rounds`).
 5. Nunca saltes `grill`: el plan debe autocrítica antes de crear issues.
 

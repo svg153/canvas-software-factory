@@ -65,6 +65,7 @@
     <div class="init">
       <input id="ghrepo" placeholder="owner/repo" size="18" />
       <input id="project" placeholder="Project id (opcional)" size="18" />
+      <input id="projectOwner" placeholder="Project owner (opcional)" size="18" />
       <input id="rounds" placeholder="rounds" size="6" value="3" />
       <button class="btn" id="initBtn">Init</button>
     </div>
@@ -73,74 +74,6 @@
 
 <pre id="log"></pre>
 
-<script>
-const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
-const PHASE_LABELS = { discover: "Descubrimiento", plan: "Plan GSD", grill: "Grill-me", issues: "Issues + Project", implement: "Implementación", review: "Revisión/Auditoría" };
-const params = new URLSearchParams(location.search);
-const repo = params.get("repo") || "";
-const base = "";
-let lastRound = 0, lastPhase = "";
-
-function log(m) { const el = document.getElementById("log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
-
-function render(s) {
-  const st = document.getElementById("status");
-  st.textContent = s?.status || "sin estado";
-  st.className = "status " + (s?.status || "");
-  document.getElementById("round").textContent = s && s.round ? `round ${s.round} / ${s.max_rounds}` : "";
-  const pipe = document.getElementById("pipeline");
-  pipe.innerHTML = "";
-  const tasksByPhase = {};
-  (s?.tasks || []).forEach(t => { (tasksByPhase[t.phase] ||= []).push(t); });
-  PHASES.forEach((p, i) => {
-    const div = document.createElement("div");
-    const idx = s ? PHASES.indexOf(s.phase) : -1;
-    div.className = "phase" + (s && s.phase === p ? " active" : "") + (s && i < idx ? " donep" : "");
-    const ts = tasksByPhase[p] || [];
-    const done = ts.filter(t => t.status === "done").length;
-    div.innerHTML = `<b>${PHASE_LABELS[p]}</b><span>${ts.length ? `${done}/${ts.length} tareas` : "—"}</span>`;
-    pipe.appendChild(div);
-  });
-  const tasksEl = document.getElementById("tasks");
-  const open = (s?.tasks || []).filter(t => t.phase === s.phase);
-  tasksEl.innerHTML = open.length ? open.map(t =>
-    `<div class="task"><span class="dot ${t.status}"></span><span class="t">${t.title}</span><span class="id">${t.id} · ${t.status}</span></div>`
-  ).join("") : `<div class="empty">Fase ${s?.phase || "—"} sin tareas (pulsa Play o next).</div>`;
-  const issEl = document.getElementById("issues");
-  issEl.innerHTML = (s?.issues || []).length ? s.issues.map(i =>
-    `<div class="issue"><a href="${i.url}" target="_blank">#${i.number || ""} ${i.title}</a></div>`
-  ).join("") : `<div class="empty">Ninguna todavía.</div>`;
-  if (s && s.round !== lastRound) { lastRound = s.round; }
-  if (s && s.phase !== lastPhase) { lastPhase = s.phase; }
-}
-
-async function action(actionName, input = {}) {
-  const r = await fetch("/action", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ actionName, input }),
-  });
-  const j = await r.json();
-  if (j.error) log("⚠ " + j.error); else log("✔ " + (j.status || JSON.stringify(j).slice(0, 120)));
-  return j;
-}
-
-document.getElementById("play").onclick = () => action("play");
-document.getElementById("pause").onclick = () => action("pause");
-document.getElementById("initBtn").onclick = () => action("init", {
-  repo: document.getElementById("ghrepo").value,
-  project: document.getElementById("project").value,
-  rounds: Number(document.getElementById("rounds").value) || 3,
-});
-
-(async () => {
-  try {
-    const s = await (await fetch("/state" + (repo ? `?repo=${encodeURIComponent(repo)}` : ""))).json();
-    render(s.status === "missing" ? null : s);
-    const es = new EventSource("/events" + (repo ? `?repo=${encodeURIComponent(repo)}` : ""));
-    es.onmessage = (e) => render(JSON.parse(e.data));
-    es.onerror = () => { log("conexión SSE perdida, reintentando…"); };
-  } catch (e) { log("error: " + e.message); }
-})();
-</script>
+<script type="module" src="/app.mjs"></script>
 </body>
 </html>

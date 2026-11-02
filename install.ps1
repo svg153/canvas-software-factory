@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 $extSource = Join-Path $PSScriptRoot "extensions\software-factory"
 if (-not (Test-Path $extSource)) { throw "No se encuentra $extSource" }
+$artifactsBackup = $null
 
 $extTarget = Join-Path $CopilotHome "extensions\software-factory"
 if (Test-Path $extTarget) {
@@ -27,14 +28,19 @@ if (Test-Path $extTarget) {
   }
   # conserva artifacts/ si existiera
   $artifacts = Join-Path $extTarget "artifacts"
-  $backup = $null
-  if (Test-Path $artifacts) { $backup = Join-Path $env:TEMP "sf-artifacts-backup"; Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue; Copy-Item -Recurse $artifacts $backup }
+  if (Test-Path $artifacts) {
+    $artifactsBackup = Join-Path ([System.IO.Path]::GetTempPath()) ("sf-artifacts-backup-" + [guid]::NewGuid().ToString("N"))
+    Copy-Item -Recurse $artifacts $artifactsBackup
+  }
   Remove-Item -Recurse -Force $extTarget
 }
 
 New-Item -ItemType Directory -Force (Split-Path $extTarget) | Out-Null
 Copy-Item -Recurse $extSource $extTarget
-if ($backup) { Copy-Item -Recurse $backup (Join-Path $extTarget "artifacts") }
+if ($artifactsBackup) {
+  Copy-Item -Recurse $artifactsBackup (Join-Path $extTarget "artifacts")
+  Remove-Item -Recurse -Force $artifactsBackup
+}
 
 $skillSource = Join-Path $PSScriptRoot "skills\software-factory"
 $skillTarget = Join-Path $CopilotHome "skills\software-factory"

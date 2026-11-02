@@ -1,0 +1,24 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run regression tests
+        run: npm test
+        working-directory: extensions/software-factory
+      - name: Check JavaScript syntax
+        run: find extensions/software-factory -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
+      - name: Validate manifests
+        run: node --input-type=module -e "import fs from 'node:fs'; for (const path of ['plugin.json', 'extensions/software-factory/package.json', 'extensions/software-factory/canvas.json']) JSON.parse(fs.readFileSync(path, 'utf8'))"

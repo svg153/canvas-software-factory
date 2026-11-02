@@ -1,12 +1,12 @@
 // Software Factory canvas — panel de control de la fábrica.
 // Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
-import { readFile, writeFile, mkdir, watch } from "node:fs/promises";
-import http from "node:http";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
 
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
+import { createFactoryServer } from "./runner/lib/http.mjs";
+import { initRunnerArgs } from "./runner/lib/actions.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, "runner", "sf.mjs");
@@ -62,8 +62,6 @@ function ensureWatch(repoDir) {
     if (state) broadcast(repoDir, state);
   }, 2500);
   watchers.set(repoDir, timer);
-  // watch() es opcional; polling basta en V0.
-  watch(join(sfPaths(repoDir).root, "state.json"), () => {}).catch(() => {});
 }
 
 function broadcast(repoDir, state) {
@@ -88,13 +86,9 @@ async function applyAction(repoDir, actionName, input = {}) {
     return { status: "Fábrica en pausa", state };
   }
   if (actionName === "init") {
-    const args = ["init", repoDir];
-    if (input.repo) args.push("--repo", input.repo);
-    if (input.project) args.push("--project", input.project);
-    if (input.rounds) args.push("--rounds", String(input.rounds));
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, ...args], { windowsHide: true });
+    const out = await promisify(execFile)("node", [RUNNER, ...initRunnerArgs(repoDir, input)], { windowsHide: true });
     return { status: "inicializado", output: out.stdout.trim() };
   }
   if (actionName === "next") {
@@ -106,54 +100,17 @@ async function applyAction(repoDir, actionName, input = {}) {
   throw new CanvasError("sf_unknown_action", `Acción desconocida: ${actionName}`);
 }
 
-function repoFromReq(req) {
-  const url = new URL(req.url, "http://127.0.0.1");
-  const q = url.searchParams.get("repo");
-  return q || session?.workspacePath || process.cwd();
-}
-
-const server = http.createServer(async (req, res) => {
-  try {
-    const repoDir = repoFromReq(req);
-    if (req.method === "GET" && (req.url === "/" || req.url?.startsWith("/?"))) {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(await readFile(join(__dirname, "index.html")));
-      return;
-    }
-    if (req.method === "GET" && req.url?.startsWith("/state")) {
-      ensureWatch(repoDir);
-      const state = await readState(repoDir);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(state || { status: "missing", repo: repoDir }));
-      return;
-    }
-    if (req.method === "GET" && req.url?.startsWith("/events")) {
-      ensureWatch(repoDir);
-      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-      const state = await readState(repoDir);
-      res.write(`data: ${JSON.stringify(state || { status: "missing" })}\n\n`);
-      if (!subscribers.has(repoDir)) subscribers.set(repoDir, new Set());
-      subscribers.get(repoDir).add(res);
-      req.on("close", () => subscribers.get(repoDir)?.delete(res));
-      return;
-    }
-    if (req.method === "POST" && req.url?.startsWith("/action")) {
-      const body = await new Promise((resolve) => {
-        let data = "";
-        req.on("data", (c) => (data += c));
-        req.on("end", () => resolve(data ? JSON.parse(data) : {}));
-      });
-      const result = await applyAction(repoDir, body.actionName, body.input || {});
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(result));
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  } catch (error) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }));
-  }
+const server = createFactoryServer({
+  extensionDir: __dirname,
+  defaultRepo: () => session?.workspacePath || process.cwd(),
+  readState,
+  ensureWatch,
+  applyAction,
+  subscribe(repoDir, res) {
+    if (!subscribers.has(repoDir)) subscribers.set(repoDir, new Set());
+    subscribers.get(repoDir).add(res);
+    res.on("close", () => subscribers.get(repoDir)?.delete(res));
+  },
 });
 
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -202,12 +159,18 @@ const factoryCanvas = createCanvas({
           repo: { type: "string" },
           github_repo: { type: "string", description: "owner/name en GitHub" },
           project: { type: "string" },
+          project_owner: { type: "string", description: "Owner del GitHub Project (por defecto, el owner del repo)" },
           rounds: { type: "number" },
         },
       },
       handler({ input }) {
         const repoDir = input?.repo || session?.workspacePath || process.cwd();
-        return applyAction(repoDir, "init", { repo: input?.github_repo, project: input?.project, rounds: input?.rounds });
+        return applyAction(repoDir, "init", {
+          repo: input?.github_repo,
+          project: input?.project,
+          project_owner: input?.project_owner,
+          rounds: input?.rounds,
+        });
       },
     },
     {

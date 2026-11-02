@@ -1,0 +1,15 @@
+{
+  "id": "software-factory",
+  "name": "Software Factory",
+  "description": "Panel de control de una fábrica de software autónoma: discover → plan GSD → grill-me → issues en GitHub Project → implement → review/audit, en rounds que se repiten.",
+  "version": "0.1.0",
+  "author": "svg153",
+  "keywords": [
+    "software-factory",
+    "automation",
+    "github-project",
+    "issues",
+    "pipeline"
+  ],
+  "main": "extension.mjs"
+}

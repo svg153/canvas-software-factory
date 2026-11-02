@@ -18,7 +18,7 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 
 ## Requirements
 
-- Node 20+, `gh` CLI authenticated (issues/Project phase), a GitHub Project id if you
+- Node 20+, `gh` CLI authenticated (issues/Project phase), a GitHub Project number if you
   want issues enqueued (`gh project list`).
 - GitHub Copilot desktop app with canvas extensions enabled.
 
@@ -27,13 +27,16 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 **Option A — installer script (Windows):**
 
 ```powershell
-git clone https://github.com/svg153/software-factory.git
-cd software-factory
-./install.ps1        # copies canvas+runner to ~/.copilot/extensions/software-factory
+git clone https://github.com/svg153/canvas-software-factory.git
+cd canvas-software-factory
+.\install.ps1        # copies canvas+runner to ~/.copilot/extensions/software-factory
                      # and the skill to ~/.copilot/skills/software-factory
 ```
 
-Then reload extensions in the app (or restart it).
+The installer copies the canvas extension's `canvas.json` registration manifest along
+with its code; `plugin.json` at the repository root remains the marketplace manifest.
+Use the same command with `-Force` to replace an existing installation, then reload
+extensions in the app (or restart it).
 
 **Option B — awesome-copilot:** once accepted as an external plugin, install it from
 the catalog with one click. To propose it, open an external-plugin submission issue in
@@ -44,7 +47,8 @@ the catalog with one click. To propose it, open an external-plugin submission is
 ```powershell
 # 1. One-time setup per repo
 node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
-  --repo owner/name --project <github-project-id> --rounds 3
+  --repo owner/name --project <project-number> --rounds 3
+# Add --project-owner <owner> if the Project belongs to a different owner
 
 # 2. Open the "Software Factory" canvas (pass repo=<absolute path> as input
 #    if the factory should target a repo other than the session workspace).
@@ -59,7 +63,14 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 - It never reads, writes or sends credentials. All GitHub operations go through the
   official `gh` CLI using *your* existing auth, with the permissions of *your* account.
 - The canvas HTTP server binds to `127.0.0.1` on a random port (localhost-only UI).
-- `gh project item-add` failures are recorded in `state.notes`; they never leak output.
+- Project item-add failures are recorded in `state.notes`; issue creation can continue.
+- When a Project owner is not provided, the runner uses the owner from `--repo`.
+
+## Validate
+
+From `extensions/software-factory/`, run `npm test` to execute the built-in Node.js
+regression tests. The GitHub Actions workflow also checks the JavaScript syntax and
+plugin, canvas, and package manifests on pushes and pull requests.
 
 ## Repo layout notes
 
