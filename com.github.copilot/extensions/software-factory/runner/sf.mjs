@@ -11,7 +11,7 @@ import {
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
 } from "./lib/prompts.mjs";
-import { createIssuesFromDraft, ghSimulationActive } from "./lib/gh.mjs";
+import { createIssuesFromDraft } from "./lib/gh.mjs";
 import { startGuardError } from "./lib/actions.mjs";
 
 const [, , cmd, repoArg = ".", ...rest] = process.argv;
@@ -22,6 +22,10 @@ const flags = (name) => {
 };
 // --dry y --dry-run son equivalentes: antes "next --dry-run" se ignoraba y creaba issues reales.
 const isDryRun = () => flags("dry") !== undefined || flags("dry-run") !== undefined;
+// La simulación SOLO existe donde está implementada (clon aislado). init/start/
+// pause/complete/status no la implementan: deben rechazar la bandera en vez de
+// ignorarla en silencio y mutar el estado igualmente.
+const DRY_COMMANDS = new Set(["next", "advance", "issues"]);
 
 function need(state) {
   if (!state) {
@@ -174,7 +178,7 @@ async function advance(state, { dryRun = isDryRun() } = {}) {
       persistState: dryRun ? async () => {} : () => saveState(work.repo_path, work),
     });
     preview.issues = created;
-    if (!dryRun) await logEvent(work.repo_path, `issues phase: ${created.length} issues${ghSimulationActive() ? " (SIMULADO SF_FAKE_GH)" : ""}`);
+    if (!dryRun) await logEvent(work.repo_path, `issues phase: ${created.length} issues`);
   }
   if (work.phase === "review") {
     if (work.round >= work.max_rounds) {
@@ -255,16 +259,26 @@ async function cmdIssues() {
     persistState: () => (dry ? Promise.resolve() : saveState(state.repo_path, state)),
   });
   if (!dry) {
-    await logEvent(repoPath, `issues manual: ${created.length}${ghSimulationActive() ? " (SIMULADO SF_FAKE_GH)" : ""}`);
+    await logEvent(repoPath, `issues manual: ${created.length}`);
     await saveState(repoPath, state);
   }
   console.log(JSON.stringify({
-    ok: true, dry_run: dry, simulated_gh: !dry && ghSimulationActive(),
+    ok: true, dry_run: dry,
     created: created.length, urls: created,
   }, null, 2));
 }
 
 async function main() {
+  // Rechazo explícito ANTES de cualquier escritura: un comando sin previsualización
+  // real no puede fingir que simula (antes start/pause/init/complete ignoraban la
+  // bandera y mutaban el estado igualmente).
+  if (isDryRun() && !DRY_COMMANDS.has(cmd)) {
+    console.error(
+      `--dry/--dry-run solo se admite en next/advance/issues; '${cmd || "?"}' no tiene previsualizacion y mutaria el estado. ` +
+      "Quita la bandera para ejecutar de verdad, o usa next <repo> --dry para previsualizar el proximo paso.",
+    );
+    process.exit(2);
+  }
   switch (cmd) {
     case "init": return cmdInit();
     case "status": return cmdStatus();
@@ -291,11 +305,13 @@ Comandos:
       no escribe en state.issues ni llama a gh: solo devuelve la previsualizacion)
   advance <repo> [--dry|--dry-run] (fuerza avance de fase; en simulacion solo previsualiza,
       NO avanza ni guarda: la fase real sigue intacta para la ejecucion posterior)
-Simulacion: --dry y --dry-run son equivalentes en cualquier comando. next/advance/issues
-  en seco operan sobre un clon aislado: no modifican state.json, events.log ni work orders.
-SF_FAKE_GH=<script.mjs>: hook de simulacion DOCUMENTADO (README) para probar sin GitHub.
-  Requiere decision real (no es dry); lo creado se marca simulated:true y se registra
-  como SIMULADO en events.log, para que una simulacion no se informe como creacion real.
+Simulacion: --dry y --dry-run son equivalentes y se admiten SOLO en next/advance/issues.
+  En seco operan sobre un clon aislado: no modifican state.json, events.log ni work
+  orders. init/start/pause/complete/status rechazan la bandera (exit 2) sin escribir.
+Produccion no tiene modo simulado: ninguna variable de entorno desvia las llamadas a
+  gh. Las pruebas e2e simulan gh con un preload exclusivo de tests
+  (test-support/fake-gh-preload.mjs, via NODE_OPTIONS=--import) que sustituye execFile en el
+  proceso de prueba; los tests unitarios inyectan runGh.
 Tareas --fail: no se re-claman; el fallo queda en status/notes/events.log.`);
   }
 }

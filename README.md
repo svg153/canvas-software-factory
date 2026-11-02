@@ -85,8 +85,10 @@ repo with `--force` (see contract below).
   exists (even corrupt), `init` refuses and exits 1 with the current progress.
   `--force` is the explicit, destructive reset. The canvas follows the same path,
   so a Play on an existing factory cannot wipe its progress by accident.
-- **Simulation is fully isolated.** `--dry` and `--dry-run` are equivalent on every
-  command. Dry runs operate on an in-memory clone: they never call `gh`, never touch
+- **Simulation is fully isolated.** `--dry` and `--dry-run` are equivalent and are
+  accepted **only** by `next`, `advance` and `issues`; every other command
+  (`init`/`start`/`pause`/`complete`/`status`…) rejects the flag with exit 2 before
+  writing anything. Dry runs operate on an in-memory clone: they never call `gh`, never touch
   `state.json`, `events.log` or work-order files, and never advance the real phase.
   `next`/`advance` in dry mode return an explicit preview (`dry_run: true` plus an
   `advance` object with the transition that *would* happen; preview issues are marked
@@ -112,14 +114,14 @@ repo with `--force` (see contract below).
 - **`state.json` is written atomically** (unique temp file + rename): a crash mid
   write leaves the previous state intact. It does not protect against concurrent
   lost updates; drive one factory per repo from one process at a time.
-- Simulation hook (documented, not hidden): `SF_FAKE_GH=<script.mjs>` makes the
-  runner invoke that Node script instead of the real `gh` CLI. It is read by
-  production code, so it only works on an explicit real (non-dry) run — the
-  regression suite uses it with a PATH-independent fake executable. Everything
-  created while it is active is marked `simulated: true` in `state.issues` and the
-  command output, and `events.log` records the run as `SIMULADO SF_FAKE_GH`, so a
-  simulation can never be mistaken for real GitHub creation. Unit tests should
-  prefer injecting `runGh` into `createIssuesFromDraft` instead.
+- **No simulation mode in production.** Nothing in `sf.mjs` or `lib/gh.mjs` reads an
+  environment variable to divert `gh` calls, and no state entry is ever marked as
+  simulated: a previous `SF_FAKE_GH` hook was removed because its entries polluted
+  `state.issues` and could block a later real run. End-to-end tests simulate `gh`
+  with a test-only preload (`runner/test-support/fake-gh-preload.mjs`, loaded via
+  `NODE_OPTIONS=--import`) that replaces `child_process.execFile` inside the test
+  process; unit tests inject `runGh` into `createIssuesFromDraft`. Removing the
+  simulation therefore cannot leave anything behind that blocks or fakes a real run.
 
 ## Privacy & security
 

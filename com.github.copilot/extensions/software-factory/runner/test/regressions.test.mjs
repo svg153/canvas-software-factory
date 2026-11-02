@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -570,35 +570,19 @@ test("extension play guards a done factory via the shared startGuardError", asyn
   assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
 });
 
-// gh falso para pruebas e2e (SF_FAKE_GH): registra llamadas, crea issues con
-// número incremental y tolera ruido en stderr con exit 0 (como gh real).
-async function writeFakeGh(dir) {
-  const fakePath = join(dir, "fake-gh.mjs");
-  await writeFile(fakePath, [
-    'import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";',
-    "const args = process.argv.slice(2);",
-    "if (process.env.SF_FAKE_GH_LOG) appendFileSync(process.env.SF_FAKE_GH_LOG, JSON.stringify(args) + String.fromCharCode(10));",
-    'if (args[0] === "issue" && args[1] === "create") {',
-    '  if (process.env.SF_FAKE_GH_MODE === "fail") { console.error("error: gh auth could not complete"); process.exit(1); }',
-    "  const c = process.env.SF_FAKE_GH_COUNTER;",
-    '  let n = c && existsSync(c) ? Number(readFileSync(c, "utf8")) : 0;',
-    "  n += 1;",
-    '  if (c) writeFileSync(c, String(n));',
-    '  console.error("warning: could not check for updates (harmless notice)");',
-    '  console.log(process.env.SF_FAKE_GH_MODE === "garbage" ? "not a url at all" : "https://github.com/org/repo/issues/" + n);',
-    "  process.exit(0);",
-    "}",
-    'console.log("{}");',
-  ].join("\n"));
-  return fakePath;
-}
+// gh falso para pruebas e2e: preload EXCLUSIVO de tests (test-support/fake-gh-preload.mjs)
+// cargado via NODE_OPTIONS=--import en el proceso del CLI. Registra llamadas, crea
+// issues con número incremental y tolera ruido en stderr con exit 0 (como gh real).
+// El código de producción no conoce ninguna variable de simulación.
+const fakeGhPreload = join(dirname(fileURLToPath(import.meta.url)), "..", "test-support", "fake-gh-preload.mjs");
 
-function ghEnv(fakePath, tempDir) {
+function ghEnv(tempDir, mode) {
   return {
     ...process.env,
-    SF_FAKE_GH: fakePath,
-    SF_FAKE_GH_LOG: join(tempDir, "gh-calls.log"),
-    SF_FAKE_GH_COUNTER: join(tempDir, "gh-counter"),
+    NODE_OPTIONS: `--import=${pathToFileURL(fakeGhPreload).href}`,
+    SF_TEST_FAKE_GH_LOG: join(tempDir, "gh-calls.log"),
+    SF_TEST_FAKE_GH_COUNTER: join(tempDir, "gh-counter"),
+    ...(mode ? { SF_TEST_FAKE_GH_MODE: mode } : {}),
   };
 }
 
@@ -607,13 +591,29 @@ async function ghCalls(logPath) {
   return (await readFile(logPath, "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
+test("production code has no simulation hook: SF_FAKE_GH cannot exist outside tests", async () => {
+  // Regresión: el hook SF_FAKE_GH en produccion contaminaba state.issues con
+  // entradas simuladas que bloqueaban la creacion real posterior al retirarlo.
+  // La simulacion vive solo en el preload de tests; la produccion siempre invoca
+  // al gh real y no lee variables de simulacion.
+  const ghSource = await readFile(join(extensionDir, "runner", "lib", "gh.mjs"), "utf8");
+  const sfSource = await readFile(join(extensionDir, "runner", "sf.mjs"), "utf8");
+  assert.doesNotMatch(ghSource, /SF_FAKE_GH/, "lib/gh.mjs no puede referenciar SF_FAKE_GH");
+  assert.doesNotMatch(sfSource, /SF_FAKE_GH/, "sf.mjs no puede referenciar SF_FAKE_GH");
+  assert.doesNotMatch(ghSource + sfSource, /simulated/, "nada se marca simulated en produccion");
+  // La unica diferencia entre sandbox y real es el binario detras de execFile
+  // (sustituido por el preload), no una puerta en el codigo: retirar la
+  // simulacion no puede dejar entradas que bloqueen una ejecucion real.
+  const preloadSource = await readFile(fakeGhPreload, "utf8");
+  assert.match(preloadSource, /syncBuiltinESMExports/, "el preload simula execFile sin tocar la produccion");
+});
+
 test("multi-round CLI with fake gh keeps issue numbers unique and claims only new round-2 issues", async (t) => {
   const tempDir = await mkdtemp(join(tmpdir(), "sf-multi-round-"));
   t.after(() => rm(tempDir, { recursive: true, force: true }));
   const repo = join(tempDir, "repo");
   await mkdir(repo);
-  const fake = await writeFakeGh(tempDir);
-  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
 
   await run("init", repo, "--repo", "org/repo", "--rounds", "2");
   await run("start", repo);
@@ -639,10 +639,10 @@ test("multi-round CLI with fake gh keeps issue numbers unique and claims only ne
 
   const state = await loadState(repo);
   const numbers = state.issues.map((i) => i.number);
-  assert.deepEqual(numbers, [1, 2, 3], "gh falso creó 3 issues reales, únicos entre rondas");
+  assert.deepEqual(numbers, [1, 2, 3], "gh falso creó 3 issues únicas entre rondas");
   assert.equal(new Set(numbers).size, numbers.length);
-  assert.ok(state.issues.every((i) => i.simulated === true),
-    "con SF_FAKE_GH las entradas se marcan simulated:true, nunca se informan como creación real");
+  assert.ok(state.issues.every((i) => !("simulated" in i)),
+    "el state no admite marcas de simulacion: la produccion no conoce modos simulados");
 
   const creates = (await ghCalls(join(tempDir, "gh-calls.log")))
     .filter((a) => a[0] === "issue" && a[1] === "create");
@@ -665,9 +665,8 @@ test("dry-run never advances nor touches production state; the real run afterwar
   t.after(() => rm(tempDir, { recursive: true, force: true }));
   const repo = join(tempDir, "repo");
   await mkdir(repo);
-  const fake = await writeFakeGh(tempDir);
   const logPath = join(tempDir, "gh-calls.log");
-  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
 
   await run("init", repo, "--repo", "org/repo", "--rounds", "1");
   await run("start", repo);
@@ -723,9 +722,10 @@ test("dry-run never advances nor touches production state; the real run afterwar
   assert.deepEqual(creates.map((a) => a[a.indexOf("--title") + 1]).sort(), ["Alpha", "Beta"]);
   const realState = await loadState(repo);
   assert.deepEqual(realState.issues.map((i) => i.title).sort(), ["Alpha", "Beta"]);
-  assert.ok(realState.issues.every((i) => i.simulated === true), "SF_FAKE_GH activo: se marcan como simuladas");
+  assert.ok(realState.issues.every((i) => !("simulated" in i) && !("dry" in i)),
+    "la continuacion real persiste issues sin marcas ficticias: nada de la simulacion anterior queda en el estado");
   const eventsAfter = await readFile(eventsFile, "utf8");
-  assert.match(eventsAfter, /issues phase: 2 issues \(SIMULADO SF_FAKE_GH\)/);
+  assert.match(eventsAfter, /issues phase: 2 issues/);
   assert.doesNotMatch(eventsBefore, /issues phase/, "la simulación no dejó rastro en events.log");
 
   // Segunda pasada real: no duplica creaciones.
@@ -739,9 +739,8 @@ test("duplicate titles within one draft are created once (real) and previewed on
   t.after(() => rm(tempDir, { recursive: true, force: true }));
   const repo = join(tempDir, "repo");
   await mkdir(repo);
-  const fake = await writeFakeGh(tempDir);
   const logPath = join(tempDir, "gh-calls.log");
-  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
 
   await run("init", repo, "--repo", "org/repo");
   const draftFile = join(repo, ".software-factory", "issues-draft.json");
@@ -763,6 +762,52 @@ test("duplicate titles within one draft are created once (real) and previewed on
   assert.equal(creates.length, 2, "el título repetido no genera una segunda creación");
   const state = await loadState(repo);
   assert.deepEqual(state.issues.map((i) => i.title), ["Alpha", "Beta"]);
+});
+
+test("commands without dry preview reject --dry/--dry-run before writing anything", async (t) => {
+  // Regresión: la ayuda prometía dry "en cualquier comando", pero start/pause/init/
+  // complete/status ignoraban la bandera y mutaban el estado igualmente.
+  // Ahora solo next/advance/issues admiten dry; el resto sale con código 2 SIN escribir.
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-dry-reject-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo");
+  await run("start", repo);
+  const stateFile = join(repo, ".software-factory", "state.json");
+  const eventsFile = join(repo, ".software-factory", "events.log");
+  const stateBefore = await readFile(stateFile, "utf8");
+  const eventsBefore = await readFile(eventsFile, "utf8");
+
+  const rejectCases = [
+    ["start", repo],
+    ["pause", repo],
+    ["init", repo, "--repo", "org/repo", "--force"], // ni con --force: dry se rechaza primero
+    ["status", repo],
+    ["complete", repo, "t1", "--force"],
+    ["set-status", repo, "paused"],
+  ];
+  for (const base of rejectCases) {
+    for (const flag of ["--dry", "--dry-run"]) {
+      await assert.rejects(run(...base, flag), (error) => {
+        assert.equal(error.code, 2, `${base[0]} ${flag} debe salir con codigo 2`);
+        assert.match(error.stderr, /solo se admite en next\/advance\/issues/);
+        return true;
+      }, `${base[0]} debe rechazar ${flag} explicitamente`);
+    }
+  }
+  assert.equal(await readFile(stateFile, "utf8"), stateBefore, "el rechazo no escribe state.json");
+  assert.equal(await readFile(eventsFile, "utf8"), eventsBefore, "el rechazo no escribe events.log");
+
+  // next/advance/issues sí aceptan la bandera (previsualización real ya cubierta en
+  // otra prueba; aquí solo el contrato de admisión). advance informa dryRun en camel.
+  for (const cmd of ["next", "advance", "issues"]) {
+    const out = JSON.parse((await run(cmd, repo, "--dry")).stdout);
+    assert.ok(out.dry_run === true || out.dryRun === true, `${cmd} admite --dry`);
+  }
+  assert.equal(await readFile(stateFile, "utf8"), stateBefore, "los dry admitidos tampoco escriben");
 });
 
 test("init refuses to overwrite existing or corrupt state without --force", async (t) => {
@@ -838,8 +883,7 @@ test("failed task is not re-claimed, other phase tasks proceed, failure stays vi
   t.after(() => rm(tempDir, { recursive: true, force: true }));
   const repo = join(tempDir, "repo");
   await mkdir(repo);
-  const fake = await writeFakeGh(tempDir);
-  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
 
   await run("init", repo, "--repo", "org/repo", "--rounds", "1");
   await run("start", repo);
@@ -880,9 +924,8 @@ test("gh exit code decides: stderr noise with 0 succeeds, exit 1 aborts, garbage
   t.after(() => rm(tempDir, { recursive: true, force: true }));
   const repo = join(tempDir, "repo");
   await mkdir(repo);
-  const fake = await writeFakeGh(tempDir);
   const runWith = (mode, ...args) => execFileAsync(process.execPath, [runnerPath, ...args], {
-    env: { ...ghEnv(fake, tempDir), ...(mode ? { SF_FAKE_GH_MODE: mode } : {}) },
+    env: ghEnv(tempDir, mode || undefined),
   });
   await runWith("", "init", repo, "--repo", "org/repo");
   await runWith("", "start", repo);
