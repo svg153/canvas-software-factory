@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 
 import { createFactoryServer } from "../lib/http.mjs";
 import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
-import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
+import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt, planPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
@@ -1194,4 +1194,160 @@ test("canvas writeStatus delegates to atomic saveState and interleaved writes ke
   assert.deepEqual(final.notes, ["keep"]);
   const leftovers = (await readdir(join(repo, ".software-factory"))).filter((n) => n.endsWith(".tmp"));
   assert.deepEqual(leftovers, []);
+});
+
+// ---------------------------------------------------------------------------
+// Ideas del usuario (semillas / "vocal ideas")
+// ---------------------------------------------------------------------------
+
+test("ideaRunnerArgs trims the idea and passes it as a positional argument", () => {
+  assert.deepEqual(ideaRunnerArgs("/repo", { idea: "  añadir OAuth  " }), ["idea", "/repo", "añadir OAuth"]);
+  assert.deepEqual(ideaRunnerArgs("/repo", {}), ["idea", "/repo", ""]);
+  assert.deepEqual(ideaRunnerArgs("/repo", { idea: 42 }), ["idea", "/repo", ""]);
+});
+
+test("planPrompt materializes pending user seeds as prioritized origin:user issues", () => {
+  const state = {
+    repo: "org/repo", repo_path: "/repo", round: 1, tasks: [],
+    seeds: [
+      { id: "seed1", text: "Añadir login con Google", status: "new" },
+      { id: "seed2", text: "Exportar a PDF", status: "planned" }, // ya consumida: no debe aparecer
+    ],
+  };
+  const prompt = planPrompt(state, { round: 1 });
+  assert.match(prompt, /Añadir login con Google/);
+  assert.match(prompt, /seed1/);
+  assert.match(prompt, /user-idea/);
+  assert.match(prompt, /origin/);
+  assert.doesNotMatch(prompt, /Exportar a PDF/, "solo las semillas new se re-materializan");
+
+  const noSeeds = planPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, tasks: [], seeds: [] }, { round: 1 });
+  assert.doesNotMatch(noSeeds, /IDEAS DEL USUARIO/);
+});
+
+test("grillPrompt triages user-idea issues with the same bar as the audit", () => {
+  const prompt = grillPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, tasks: [], seeds: [] }, { round: 1 });
+  assert.match(prompt, /user-idea/);
+  assert.match(prompt, /no tienen pase automático|NO tiene pase/i);
+});
+
+test("idea command stores a seed with status new; empty idea is rejected", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-idea-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo");
+  const out = JSON.parse((await run("idea", repo, "quiero un modo oscuro")).stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.seed.status, "new");
+  assert.equal(out.seed.origin, "user");
+  assert.equal(out.seed.text, "quiero un modo oscuro");
+
+  const state = await loadState(repo);
+  assert.equal(state.seeds.length, 1);
+  assert.equal(state.seeds[0].id, "seed1");
+
+  await assert.rejects(run("idea", repo, "   "), (e) => /Idea vacía/.test(e.stderr));
+  // idea no admite simulación: se rechaza antes de escribir.
+  await assert.rejects(execFileAsync(process.execPath, [runnerPath, "idea", repo, "x", "--dry"]), (e) => e.code === 2);
+});
+
+test("seed rides the rounds: new -> planned (leaving plan) -> triaged (leaving grill), issue created once", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-seed-lifecycle-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+  const draftFile = join(repo, ".software-factory", "issues-draft.json");
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  await run("idea", repo, "OAuth con Google");
+
+  // discover
+  let out = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(out.phase, "discover");
+  for (const task of out.tasks) await run("complete", repo, task.id, "--force");
+
+  // plan: seed sigue "new"; el work order menciona la idea. El "agente" escribe el draft.
+  out = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(out.phase, "plan");
+  assert.match(out.tasks[0].prompt, /OAuth con Google/);
+  await writeFile(draftFile, JSON.stringify({
+    issues: [{ title: "OAuth con Google", body: "b", labels: ["user-idea"], origin: "user", seed_id: "seed1" }],
+  }));
+  await run("complete", repo, out.tasks[0].id, "--force");
+
+  // salir de plan -> planned
+  out = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(out.phase, "grill");
+  assert.equal((await loadState(repo)).seeds[0].status, "planned");
+  await run("complete", repo, out.tasks[0].id, "--force");
+
+  // salir de grill -> triaged; la fase issues (mecánica) crea la issue con gh falso
+  out = JSON.parse((await run("next", repo)).stdout);
+  const state = await loadState(repo);
+  assert.equal(state.seeds[0].status, "triaged");
+  assert.ok(state.issues.some((i) => i.title === "OAuth con Google"), "la idea llegó a GitHub como issue");
+
+  // el ciclo termina sin duplicar la issue en rondas posteriores (rounds=1 -> done)
+  let iterations = 0;
+  while (out.status === "running" && iterations++ < 40) {
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+    out = JSON.parse((await run("next", repo)).stdout);
+  }
+  assert.equal(out.status, "done");
+  const final = await loadState(repo);
+  assert.equal(final.issues.filter((i) => i.title === "OAuth con Google").length, 1, "la idea se creó una sola vez");
+});
+
+test("a seed added after the plan work order waits for the next plan (cutoff guard)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-seed-cutoff-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  let out = JSON.parse((await run("next", repo)).stdout); // discover
+  for (const task of out.tasks) await run("complete", repo, task.id, "--force");
+  out = JSON.parse((await run("next", repo)).stdout); // plan emitido
+  assert.equal(out.phase, "plan");
+  const planTask = (await loadState(repo)).tasks.find((t) => t.phase === "plan");
+
+  await new Promise((r) => setTimeout(r, 20)); // fuerza created_at estrictamente posterior
+  await run("idea", repo, "idea tardía");
+
+  await run("complete", repo, out.tasks[0].id, "--force");
+  out = JSON.parse((await run("next", repo)).stdout); // avanza plan -> grill
+  assert.equal(out.phase, "grill");
+  const state = await loadState(repo);
+  const late = state.seeds.find((s) => s.text === "idea tardía");
+  assert.equal(late.status, "new", "la semilla posterior al plan no se marca como consumida");
+  assert.ok(late.created_at > planTask.created_at);
+});
+
+test("canvas and UI wire add_idea to the idea action and render seeds", async () => {
+  const ext = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  assert.match(ext, /name: "add_idea"/);
+  assert.match(ext, /applyAction\(repoDir, "idea"/);
+  assert.match(ext, /actionName === "idea"[\s\S]{0,240}ideaRunnerArgs/);
+
+  const app = await readFile(join(extensionDir, "app.mjs"), "utf8");
+  assert.match(app, /ideaBtn[\s\S]{0,320}action\("add_idea"/);
+
+  const doc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "seeds"]);
+  renderState({
+    status: "running", round: 1, max_rounds: 3, phase: "plan", tasks: [], issues: [],
+    seeds: [{ id: "seed1", text: "modo oscuro", status: "new" }],
+  }, doc);
+  const seedEl = doc.getElementById("seeds").children[0].children[0];
+  assert.equal(seedEl.textContent, "[new] modo oscuro");
+
+  // doc sin contenedor #seeds (como el test de render previo) no debe romperse
+  const minimal = new FakeDocument(["status", "round", "pipeline", "tasks", "issues"]);
+  renderState({ status: "running", round: 1, max_rounds: 3, phase: "plan", tasks: [], issues: [], seeds: [{ text: "x" }] }, minimal);
 });

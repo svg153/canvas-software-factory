@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **User idea injection ("vocal ideas").** The canvas now has an idea box and a
+  `add_idea` action, and the runner a `idea <repo> "<text>"` command. An idea is
+  stored as a *seed* (`state.seeds`, `status: new`) that does not start its own
+  round; the next `plan` phase decomposes it into 1+ issues (label `user-idea`,
+  `origin: user`) that flow through grill → issues → Project → implement → review
+  exactly like the audit issues. The runner owns the seed lifecycle in `advance()`
+  (`new → planned` leaving plan, `planned → triaged` leaving grill) with a
+  `created_at` cutoff guard so an idea added after the current plan was emitted
+  waits for the next round's plan. `planPrompt`/`grillPrompt`, the canvas UI
+  (seeds panel), the `software-factory` skill and the README document the flow.
+  Covered by 7 new regression tests.
+
 ## v0.1.1
 
 ### Fixed

@@ -32,6 +32,13 @@ document.getElementById("initBtn").onclick = () => action("init", createInitPayl
   projectOwner: document.getElementById("projectOwner").value,
   rounds: Number(document.getElementById("rounds").value) || 3,
 }));
+document.getElementById("ideaBtn").onclick = async () => {
+  const input = document.getElementById("ideaText");
+  const idea = input.value.trim();
+  if (!idea) { log("⚠ escribe una idea antes de pulsar Añadir idea"); return; }
+  const result = await action("add_idea", { idea });
+  if (!result.error) input.value = "";
+};
 
 try {
   const state = await (await fetch(routeWithRepo("/state", repo))).json();

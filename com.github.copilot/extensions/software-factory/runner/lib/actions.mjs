@@ -14,3 +14,10 @@ export function initRunnerArgs(repoDir, input = {}) {
   if (input.rounds) args.push("--rounds", String(input.rounds));
   return args;
 }
+
+// El texto de la idea viaja como argumento posicional (no como flag) para que el runner
+// lo lea tal cual; se recorta por si el campo llega con espacios o vacío.
+export function ideaRunnerArgs(repoDir, input = {}) {
+  const text = typeof input.idea === "string" ? input.idea.trim() : "";
+  return ["idea", repoDir, text];
+}

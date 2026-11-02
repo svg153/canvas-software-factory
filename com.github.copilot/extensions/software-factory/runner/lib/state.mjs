@@ -33,8 +33,17 @@ export function defaultState(repoPath, opts = {}) {
     phase: "discover",
     tasks: [],
     issues: [],
+    // Ideas del usuario ("vocal ideas"): cada una es una semilla que la próxima
+    // fase plan descompone en 1+ issues. Ciclo: new -> planned (al salir de plan)
+    // -> triaged (al salir de grill). Status lo mueve la máquina de fases, no el agente.
+    seeds: [],
     updated_at: nowIso(),
   };
+}
+
+// Semillas pendientes de materializar: las que aún no ha visto ninguna fase plan.
+export function newSeeds(state) {
+  return (state.seeds || []).filter((s) => s.status === "new");
 }
 
 export async function loadState(repoPath) {

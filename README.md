@@ -9,7 +9,7 @@ reviews/audits the round, and repeats for a bounded number of rounds.
 
 | Component | Path | Purpose |
 |---|---|---|
-| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, Play/Pause. Play sends the kick-off prompt to the session agent via `session.send`. |
+| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, seeds (user ideas), Play/Pause and an idea box. Play sends the kick-off prompt to the session agent via `session.send`. |
 | Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase and executes the mechanical `issues` phase (`gh issue create` + `gh project item-add`). |
 | Skill | `skills/software-factory/SKILL.md` | The loop contract the agent follows (phases, subagents, rules). |
 
@@ -90,6 +90,13 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 
 # 3. ▶ Play. Watch the pipeline; the agent executes work orders and marks them done.
 #    ⏸ Pause anytime. State lives in <repo>/.software-factory/.
+
+# 4. (Optional) Inject your own idea — "vocal idea". Type it in the canvas idea box
+#    (or run the CLI below) at any moment. It is stored as a *seed* and the NEXT
+#    `plan` phase decomposes it into 1+ issues (label `user-idea`, `origin: user`)
+#    that go through grill → issues → Project → implement → review exactly like the
+#    audit issues. It never launches its own round.
+node ~/.copilot/extensions/software-factory/runner/sf.mjs idea C:\path\to\repo "mi idea"
 ```
 
 A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refuse to
@@ -132,6 +139,17 @@ repo with `--force` (see contract below).
 - **`state.json` is written atomically** (unique temp file + rename): a crash mid
   write leaves the previous state intact. It does not protect against concurrent
   lost updates; drive one factory per repo from one process at a time.
+- **User ideas are seeds that ride the rounds.** `idea <repo> "<text>"` (canvas
+  `add_idea`) appends a seed `{ id, text, origin: user, status: new, created_at }`
+  to `state.seeds`; it does not create issues or start a round. The runner (not the
+  agent) owns the lifecycle transitions inside `advance()`: leaving `plan` flips
+  `new → planned`, leaving `grill` flips `planned → triaged`. `planPrompt` only
+  materializes seeds still in `new`. A **cutoff guard** makes this race-safe: when
+  leaving `plan`, only seeds with `created_at <= <plan work order's created_at>`
+  are consumed, so an idea added *after* the current plan was emitted stays `new`
+  and is picked up by the next round's plan instead of being silently marked done.
+  Extra draft fields (`origin`, `seed_id`) are ignored by `createIssuesFromDraft`,
+  and title de-duplication against `state.issues` means a seed can never double-create.
 - **No simulation mode in production.** Nothing in `sf.mjs` or `lib/gh.mjs` reads an
   environment variable to divert `gh` calls, and no state entry is ever marked as
   simulated: a previous `SF_FAKE_GH` hook was removed because its entries polluted
