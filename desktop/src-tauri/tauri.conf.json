@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Software Factory",
+  "version": "0.1.0",
+  "identifier": "com.github.svg153.softwarefactory",
+  "build": {
+    "devUrl": "http://127.0.0.1:4317/",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      { "label": "main", "title": "Software Factory", "width": 1280, "height": 800, "url": "http://127.0.0.1:4317/" }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false }
+}
