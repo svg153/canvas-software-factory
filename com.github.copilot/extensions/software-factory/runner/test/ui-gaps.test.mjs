@@ -181,7 +181,8 @@ test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas"
     assert.ok(src.includes(`name: "${name}"`), name);
   }
   assert.match(src, /applyAction\(repoDir, "init", \{\s*repo: input\?\.github_repo,/);
-  assert.match(src, /const repoDir = input\?\.repo \|\| session\?\.workspacePath/);
+  assert.match(src, /const repoDir = repoFrom\(input\)/);
+  assert.match(src, /const repoFrom = \(input\) => allowlist\.resolve\(input\?\.repo\)/);
   assert.match(src, /initRunnerArgs\(repoDir, input\)/);
   assert.match(src, /startGuardError\(await readState\(repoDir\)\)/);
   assert.match(src, /throw new CanvasError\("sf_unknown_action"/);
