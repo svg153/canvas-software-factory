@@ -89,7 +89,7 @@ async function applyAction(repoDir, actionName, input = {}) {
   }
   if (actionName === "init") {
     const args = ["init", repoDir];
-    if (input.repo) args.push("--repo", input.repo);
+    if (input.github_repo) args.push("--repo", input.github_repo);
     if (input.project) args.push("--project", input.project);
     if (input.rounds) args.push("--rounds", String(input.rounds));
     const { execFile } = await import("node:child_process");
@@ -207,7 +207,7 @@ const factoryCanvas = createCanvas({
       },
       handler({ input }) {
         const repoDir = input?.repo || session?.workspacePath || process.cwd();
-        return applyAction(repoDir, "init", { repo: input?.github_repo, project: input?.project, rounds: input?.rounds });
+        return applyAction(repoDir, "init", { github_repo: input?.github_repo, project: input?.project, rounds: input?.rounds });
       },
     },
     {

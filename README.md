@@ -27,8 +27,8 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 **Option A — installer script (Windows):**
 
 ```powershell
-git clone https://github.com/svg153/software-factory.git
-cd software-factory
+git clone https://github.com/svg153/canvas-software-factory.git
+cd canvas-software-factory
 ./install.ps1        # copies canvas+runner to ~/.copilot/extensions/software-factory
                      # and the skill to ~/.copilot/skills/software-factory
 ```

@@ -115,7 +115,8 @@ function render(s) {
 }
 
 async function action(actionName, input = {}) {
-  const r = await fetch("/action", {
+  const url = "/action" + (repo ? `?repo=${encodeURIComponent(repo)}` : "");
+  const r = await fetch(url, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ actionName, input }),
   });
@@ -127,7 +128,7 @@ async function action(actionName, input = {}) {
 document.getElementById("play").onclick = () => action("play");
 document.getElementById("pause").onclick = () => action("pause");
 document.getElementById("initBtn").onclick = () => action("init", {
-  repo: document.getElementById("ghrepo").value,
+  github_repo: document.getElementById("ghrepo").value,
   project: document.getElementById("project").value,
   rounds: Number(document.getElementById("rounds").value) || 3,
 });

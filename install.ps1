@@ -41,6 +41,15 @@ $skillTarget = Join-Path $CopilotHome "skills\software-factory"
 New-Item -ItemType Directory -Force $skillTarget | Out-Null
 Copy-Item -Recurse -Force (Join-Path $skillSource "*") $skillTarget
 
+# Instala las dependencias del canvas (@github/copilot-sdk) en la copia instalada.
+if (Get-Command npm.cmd -ErrorAction SilentlyContinue) {
+  Push-Location $extTarget
+  & npm.cmd install --omit=dev
+  Pop-Location
+} else {
+  Write-Warning "npm no disponible: ejecuta manualmente 'npm install --omit=dev' en $extTarget"
+}
+
 Write-Host "Canvas+runner -> $extTarget"
 Write-Host "Skill         -> $skillTarget"
 Write-Host "Recarga las extensiones en la app de Copilot (o reiníciala)."
