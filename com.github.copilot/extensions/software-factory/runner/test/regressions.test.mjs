@@ -677,7 +677,7 @@ test("start refuses a finished factory and keeps status done", async (t) => {
 });
 
 test("extension play guards a done factory via the shared startGuardError", async () => {
-  const extSource = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  const extSource = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
   assert.match(extSource, /startGuardError/);
   assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
 });
