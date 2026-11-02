@@ -1,6 +1,6 @@
 // Software Factory runner — state machine shared by the CLI and the canvas.
 // Lives in <repo>/.software-factory/
-import { mkdir, readFile, writeFile, appendFile, readdir, rename, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, readdir, rename, unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export const SF_DIR = ".software-factory";
@@ -46,25 +46,72 @@ export async function loadState(repoPath) {
   }
 }
 
-export async function saveState(repoPath, state) {
-  const p = paths(repoPath);
-  await mkdir(p.pending, { recursive: true });
-  await mkdir(p.results, { recursive: true });
-  state.updated_at = nowIso();
-  // Escritura atómica: tmp único por escritura (pid+aleatorio, sin colisión entre
-  // procesos) + rename. Un crash a mitad deja el state anterior íntegro, no corrupto.
-  // Nota: no protege contra actualizaciones perdidas por escritura concurrente.
-  const tmp = `${p.state}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+// Escritura atómica compartida: tmp único (pid+aleatorio) + rename. Un crash a mitad
+// deja el fichero anterior íntegro, nunca a medias.
+async function atomicWrite(file, data) {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    await writeFile(tmp, JSON.stringify(state, null, 2));
-    await rename(tmp, p.state);
+    await writeFile(tmp, data);
+    await rename(tmp, file);
   } catch (e) {
     await unlink(tmp).catch(() => {});
     throw e;
   }
+}
+
+const LOCK_STALE_MS = 30_000;
+const LOCK_TIMEOUT_MS = 15_000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Lock de fichero (state.json.lock, creación exclusiva) entre procesos: canvas y runner.
+export async function withStateLock(repoPath, fn) {
+  const p = paths(repoPath);
+  await mkdir(p.pending, { recursive: true });
+  await mkdir(p.results, { recursive: true });
+  const lock = `${p.state}.lock`;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (let wait = 5; ; wait = Math.min(wait * 2, 100)) {
+    try {
+      await writeFile(lock, String(process.pid), { flag: "wx" });
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST" && e.code !== "EPERM" && e.code !== "EACCES") throw e;
+      try {
+        // Lock huérfano (proceso muerto a mitad): se recupera pasado el umbral.
+        if (Date.now() - (await stat(lock)).mtimeMs > LOCK_STALE_MS) await unlink(lock);
+      } catch {}
+      if (Date.now() > deadline) throw new Error(`state.json bloqueado (${lock}); borra el lock si ningún proceso lo usa`);
+      await sleep(wait);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await unlink(lock).catch(() => {});
+  }
+}
+
+async function writeStateUnlocked(repoPath, state) {
+  state.updated_at = nowIso();
+  await atomicWrite(paths(repoPath).state, JSON.stringify(state, null, 2));
   return state;
 }
 
+export function saveState(repoPath, state) {
+  return withStateLock(repoPath, () => writeStateUnlocked(repoPath, state));
+}
+
+// Read-modify-write bajo lock: ninguna mutación concurrente se pierde.
+// mutate recibe el estado actual (o null) y puede devolver otro objeto; si devuelve
+// false no se escribe.
+export function updateState(repoPath, mutate) {
+  return withStateLock(repoPath, async () => {
+    const current = await loadState(repoPath);
+    const result = await mutate(current);
+    if (result === false) return current;
+    return writeStateUnlocked(repoPath, result ?? current);
+  });
+}
 export async function logEvent(repoPath, msg) {
   const p = paths(repoPath);
   await mkdir(p.root, { recursive: true });
@@ -116,7 +163,7 @@ export function newTask(state, phase, title) {
 
 export async function writeWorkOrder(task, prompt) {
   await mkdir(join(task.prompt_file, ".."), { recursive: true });
-  await writeFile(task.prompt_file, prompt);
+  await atomicWrite(task.prompt_file, prompt);
   task.status = "awaiting_agent";
 }
 
