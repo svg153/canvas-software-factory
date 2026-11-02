@@ -1,19 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { HARNESSES } from '../harnesses.mjs';
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const KILL_GRACE_MS = 3000;
 const STDERR_TAIL = 2000;
 
-// Single matrix of harness flags. stdin:true => prompt piped via stdin; otherwise last arg.
-export const HARNESSES = {
-  copilot: { bin: 'copilot', base: ['-p'], model: ['--model'], stdin: true, hint: 'npm i -g @github/copilot' },
-  claude: { bin: 'claude', base: ['-p', '--permission-mode', 'acceptEdits'], model: ['--model'], stdin: true, hint: 'npm i -g @anthropic-ai/claude-code' },
-  codex: { bin: 'codex', base: ['exec', '--full-auto'], model: ['--model'], stdin: true, hint: 'npm i -g @openai/codex' },
-  opencode: { bin: 'opencode', base: ['run'], model: ['-m'], stdin: false, hint: 'npm i -g opencode-ai' },
-  gemini: { bin: 'gemini', base: ['-p'], model: ['--model'], stdin: true, hint: 'npm i -g @google/gemini-cli' },
-};
+export { HARNESSES };
 
 // Kills pid and all its descendants. execFn/killFn injectable for tests.
 export function killTree(pid, platform = process.platform, execFn = spawnSync, killFn = process.kill.bind(process)) {
@@ -57,7 +51,7 @@ export function createAdapter(id, spec) {
       if (!command && !this.available(env)) {
         return Promise.resolve({ ok: false, output: '', exitCode: null, error: `${id} CLI ('${spec.bin}') not found on PATH. Install: ${spec.hint}` });
       }
-      return spawnCollect(cmd, args, built.stdin, { cwd, timeoutMs, env, shell: !command && process.platform === 'win32' });
+      return spawnCollect(cmd, args, built.stdin, { cwd, timeoutMs, env, shell: !command && spec.winShell !== false && process.platform === 'win32' });
     },
   };
 }

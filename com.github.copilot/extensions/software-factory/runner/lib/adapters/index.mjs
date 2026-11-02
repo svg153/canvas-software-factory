@@ -13,7 +13,7 @@ const vscode = {
   },
 };
 
-const adapters = new Map(Object.entries(HARNESSES).map(([id, spec]) => [id, createAdapter(id, spec)]));
+const adapters = new Map(Object.entries(HARNESSES).filter(([, spec]) => spec.headless).map(([id, spec]) => [id, createAdapter(id, spec)]));
 adapters.set('vscode', vscode);
 
 export function list() { return [...adapters.keys()]; }
