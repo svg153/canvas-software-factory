@@ -1,7 +1,7 @@
 // Software Factory canvas — panel de control de la fábrica.
 // Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
 import { readFile } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { statSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +24,7 @@ function sfPaths(repoDir) {
 }
 
 async function readState(repoDir) {
+  if (!repoDir) return null;
   try {
     return JSON.parse(await readFile(sfPaths(repoDir).state, "utf8"));
   } catch {
@@ -49,6 +50,7 @@ function factoryPrompt(repoDir, state) {
 // cuando el repo se queda sin suscriptores (antes quedaba vivo para siempre).
 const watchers = new Map();
 function ensureWatch(repoDir) {
+  if (!repoDir) return;
   if (watchers.has(repoDir)) return;
   const timer = setInterval(async () => {
     if (!subscribers.get(repoDir)?.size) {
@@ -74,7 +76,7 @@ async function applyAction(repoDir, actionName, input = {}) {
   // cae a un directorio cualquiera. Nunca escribamos estado de fábrica fuera de un git.
   if (!repoIsGitWorkspace(repoDir)) {
     throw new CanvasError("sf_repo_no_permitido",
-      "El panel no tiene un repo de trabajo. Pide al agente que reabra el canvas con input.repo = la ruta del workspace de tu sesión.");
+      "El panel no tiene un repo de trabajo. Escribe la ruta absoluta de tu workspace (git) en el campo «Repo» y pulsa «Usar repo».");
   }
   if (actionName === "get_state") {
     const state = await readState(repoDir);
@@ -121,10 +123,31 @@ const repoIsGitWorkspace = (dir) => {
 // Las acciones del canvas también pasan por el allowlist (no solo HTTP).
 const repoFrom = (input) => allowlist.resolve(input?.repo);
 
+// El input de open_canvas no siempre es utilizable (limitación de la app al serializar),
+// así que el panel permite escribir la ruta del repo en su propia UI. Aceptamos cualquier
+// ruta absoluta que sea un workspace git; el servidor solo escucha en 127.0.0.1 y exige
+// Host+CSRF, y applyAction sigue rechazando todo lo que no sea git.
+function resolveRepoInput(requested) {
+  if (requested === undefined || requested === null || requested === "") return "";
+  try {
+    return allowlist.resolve(requested);
+  } catch {
+    /* fuera de raíces autorizadas; probamos el criterio de workspace git */
+  }
+  let real;
+  try {
+    real = realpathSync.native(requested);
+  } catch {
+    throw new Error("sf_repo_no_permitido");
+  }
+  if (!repoIsGitWorkspace(real)) throw new Error("sf_repo_no_permitido");
+  return real;
+}
+
 const server = createFactoryServer({
   extensionDir: __dirname,
   defaultRepo,
-  resolveRepo: (requested) => allowlist.resolve(requested),
+  resolveRepo: resolveRepoInput,
   readState,
   ensureWatch,
   applyAction,

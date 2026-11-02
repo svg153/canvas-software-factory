@@ -51,7 +51,11 @@
   <button class="btn pause" id="pause">⏸ Pausa</button>
   <span class="status" id="status">sin estado</span>
 </header>
-<div class="round" id="repopath" title="Directorio que gestiona este panel" style="margin:-8px 0 12px"></div>
+<div class="round" id="repopath" title="Directorio que gestiona este panel" style="margin:-8px 0 8px"></div>
+<div class="init" id="repobar" style="margin:0 0 12px">
+  <input id="repoInput" placeholder="ruta del workspace (C:\...\mi-repo)" size="42" title="Ruta absoluta del repositorio git que quiere gestionar este panel. El host de extensiones no conoce tu sesión: escribe la ruta aquí y pulsa «Usar repo»." />
+  <button class="btn" id="setRepo" title="Aplicar la ruta escrita">Usar repo</button>
+</div>
 
 <div class="pipeline" id="pipeline"></div>
 

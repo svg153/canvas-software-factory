@@ -85,10 +85,10 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
   --repo owner/name --project <project-number> --rounds 3
 # Add --project-owner <owner> if the Project belongs to a different owner
 
-# 2. Open the "Software Factory" canvas. Ask your agent to open it with
-#    input.repo=<absolute path> — the extension host is not bound to a chat
-#    session, so without an explicit repo the panel has no workspace to manage
-#    (it shows a warning and refuses writes outside a git repo).
+# 2. Open the "Software Factory" canvas. The extension host is not bound to a chat
+#    session, so the panel starts without a repo: type the absolute path of your
+#    git workspace in the "Repo" field and press "Usar repo" (or open the canvas
+#    with input.repo=<absolute path> if your client supports passing open input).
 
 # 3. ▶ Play. Watch the pipeline; the agent executes work orders and marks them done.
 #    ⏸ Pause anytime. State lives in <repo>/.software-factory/.
@@ -199,12 +199,14 @@ repo settings, not in code.
   rechaza `Origin` externo o `Sec-Fetch-Site: cross-site` en `POST /action`, limita el body a
   64 KB, envía `X-Content-Type-Options: nosniff` y CSP, y no expone rutas locales en errores.
   No es autenticación de usuario: cualquier proceso local sigue pudiendo leer el token del HTML.
-- `?repo=` (en `/state`, `/events`, `/action`) y `input.repo` de las acciones del canvas solo aceptan
-  rutas absolutas, existentes y dentro (por `realpath`, así que `..` y symlinks que escapan se
-  rechazan) del workspace de la sesión o de una raíz autorizada; el resto devuelve 400
-  `sf_repo_no_permitido` sin tocar disco. Un repo externo se autoriza abriendo el canvas con
-  `repo` (acción explícita) o con la variable `SF_ALLOWED_ROOTS` (lista separada por `;` en Windows,
-  `:` en Linux/macOS). Las autorizaciones viven en memoria y se pierden al reiniciar la extensión.
+- `?repo=` (en `/state`, `/events`, `/action`) y `input.repo` de las acciones del canvas aceptan
+  rutas absolutas existentes (resueltas con `realpath`, así que `..` y symlinks que escapan se
+  normalizan). Una ruta dentro del workspace de la sesión, de `SF_ALLOWED_ROOTS` o autorizada al
+  abrir el canvas pasa siempre; además, el panel permite escribir cualquier ruta que sea un
+  **workspace git** (contiene `.git`) — necesario porque el host de extensiones no está ligado a
+  una sesión de chat y la app no siempre puede pasar `input.repo`. Las escrituras fuera de un git
+  se rechazan con `sf_repo_no_permitido` sin tocar disco. Mitigaciones: servidor solo en
+  `127.0.0.1`, token CSRF por instancia y validación de `Host`/`Origin`.
 
 ## Repo layout notes
 
