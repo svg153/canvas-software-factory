@@ -225,6 +225,62 @@ test("persists created issues before a later failure so retry skips them", async
   assert.deepEqual(state.issues.map((issue) => issue.title), ["First", "Second"]);
 });
 
+// Regresión QA: el flujo real create -> project item-add confirmado por probe en gh
+// se cubre aqui con runGh inyectado (sin GitHub real), en exito y en fallo parcial.
+test("created issue is added to the Project with the right owner and URL", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-item-add-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  await writeFile(join(tempDir, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Alpha" }] }));
+
+  const state = { repo_path: tempDir, repo: "org/repo", project_id: "17", project_owner: "project-org", issues: [] };
+  const calls = [];
+  const runGh = async (args) => {
+    calls.push(args);
+    if (args[0] === "issue") return "https://github.com/org/repo/issues/42";
+    return "{}\n";
+  };
+  let saves = 0;
+  const created = await createIssuesFromDraft(state, { runGh, persistState: async () => { saves += 1; } });
+
+  assert.equal(created.length, 1);
+  assert.equal(calls.length, 2, "tras crear la issue se invoca project item-add");
+  assert.deepEqual(calls[1], [
+    "project", "item-add", "17",
+    "--owner", "project-org",
+    "--url", "https://github.com/org/repo/issues/42",
+  ], "item-add usa el project_id, owner y URL de la issue recien creada");
+});
+
+test("project item-add failure keeps the issue persisted and notes it", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-item-add-fail-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  await writeFile(join(tempDir, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Alpha" }] }));
+
+  const state = { repo_path: tempDir, repo: "org/repo", project_id: "17", issues: [] };
+  const snapshots = [];
+  const runGh = async (args) => {
+    if (args[0] === "issue") return "https://github.com/org/repo/issues/7";
+    throw new Error("project not visible to this user");
+  };
+  const created = await createIssuesFromDraft(state, {
+    runGh,
+    persistState: async () => { snapshots.push({ issues: state.issues.map((i) => ({ ...i })), notes: state.notes || "" }); },
+  });
+
+  // El fallo de item-add NO aborta la fabrica: la issue queda creada y persistida.
+  assert.deepEqual(created.map((i) => i.number), [7]);
+  assert.deepEqual(state.issues.map((i) => i.number), [7], "la issue se conserva pese al fallo de item-add");
+  assert.match(state.notes, /project add failed for #7: project not visible/);
+  // owner derivado de state.repo cuando no hay project_owner
+  const last = snapshots.at(-1);
+  assert.deepEqual(last.issues.map((i) => i.number), [7], "la persistencia posterior al fallo incluye la issue");
+  assert.match(last.notes, /project add failed for #7/, "la nota del fallo queda en la ultima persistencia");
+});
+
 class FakeElement {
   constructor(tagName) {
     this.tagName = tagName;
@@ -860,22 +916,46 @@ test("complete requires the report file; --force is the explicit documented alte
 
   await assert.rejects(run("complete", repo, discover.id), (error) => {
     assert.equal(error.code, 1);
-    assert.match(error.stderr, /Sin informe en/);
+    assert.match(error.stderr, /Sin informe utilizable en/);
     assert.match(error.stderr, /--force/);
     return true;
   });
   assert.equal((await loadState(repo)).tasks.find((task) => task.id === discover.id).status, "awaiting_agent");
 
-  // Con informe escrito, el cierre contractual funciona sin --force.
-  await writeFile(discover.result_file, "# Informe\nhallazgos\n");
-  await run("complete", repo, discover.id);
+  // Regresión QA: un informe vacio o solo-espacios NO cuenta como informe.
+  await writeFile(discover.result_file, "");
+  await assert.rejects(run("complete", repo, discover.id), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /Sin informe utilizable en/);
+    return true;
+  }, "el archivo vacio no debe cerrar la tarea");
+  await writeFile(discover.result_file, "   \n\t \n");
+  await assert.rejects(run("complete", repo, discover.id), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /Sin informe utilizable en/);
+    return true;
+  }, "solo espacios no debe cerrar la tarea");
+  assert.equal((await loadState(repo)).tasks.find((task) => task.id === discover.id).status, "awaiting_agent");
+  // --force y --fail siguen siendo excepciones explicitas aunque exista vacio.
+  await run("complete", repo, discover.id, "--force");
   assert.equal((await loadState(repo)).tasks.find((task) => task.id === discover.id).status, "done");
 
-  // --force cierra sin informe (alternativa explícita).
-  await run("next", repo);
+  // Con informe escrito, el cierre contractual funciona sin --force.
+  await run("next", repo); // discover done -> fase plan, emite tarea plan
   const plan = (await loadState(repo)).tasks.find((task) => task.phase === "plan");
-  await run("complete", repo, plan.id, "--force");
+  await assert.rejects(run("complete", repo, plan.id), (error) => {
+    assert.equal(error.code, 1);
+    return true;
+  }, "tarea nueva sin informe sigue protegida tras el fix");
+  await writeFile(plan.result_file, "# Informe\nhallazgos\n");
+  await run("complete", repo, plan.id);
   assert.equal((await loadState(repo)).tasks.find((task) => task.id === plan.id).status, "done");
+
+  // --force cierra sin informe (alternativa explícita).
+  await run("next", repo); // plan done -> fase grill, emite tarea grill
+  const grill = (await loadState(repo)).tasks.find((task) => task.phase === "grill");
+  await run("complete", repo, grill.id, "--force");
+  assert.equal((await loadState(repo)).tasks.find((task) => task.id === grill.id).status, "done");
 });
 
 test("failed task is not re-claimed, other phase tasks proceed, failure stays visible", async (t) => {

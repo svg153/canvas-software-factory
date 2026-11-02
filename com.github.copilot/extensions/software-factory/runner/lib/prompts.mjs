@@ -7,7 +7,7 @@ const RUNNER = fileURLToPath(new URL("../sf.mjs", import.meta.url));
 
 // El CLI exige: sf.mjs complete <repoPath> <taskId>. Rutas entre comillas por si llevan espacios.
 const RESULTS_NOTE = (state, task) =>
-  `Cuando termines, guarda el resultado en ${task.result_file} (crear/actualizar el archivo). ` +
+  `Cuando termines, guarda el resultado en ${task.result_file} (crear/actualizar el archivo con contenido no vacío). ` +
   `Reporta con: node "${RUNNER}" complete "${state.repo_path}" ${task.id}`;
 
 // Prompt de arranque que el canvas envía a la sesión del agente.

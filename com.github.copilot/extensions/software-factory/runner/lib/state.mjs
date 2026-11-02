@@ -122,8 +122,10 @@ export async function writeWorkOrder(task, prompt) {
 
 export async function hasResult(task) {
   try {
-    await readFile(task.result_file, "utf8");
-    return true;
+    // Un archivo vacío o solo espacios no es un informe: complete sin --force
+    // debe exigir contenido real (QA: antes bastaba tocar el archivo).
+    const content = await readFile(task.result_file, "utf8");
+    return content.trim().length > 0;
   } catch {
     return false;
   }

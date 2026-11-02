@@ -221,7 +221,7 @@ async function cmdComplete() {
   // escrito en result_file. --force es la alternativa explícita y documentada.
   if (!fail && !extra.includes("--force") && !(await hasResult(t))) {
     console.error(
-      `Sin informe en ${t.result_file}. Escribe el resultado de la tarea antes de cerrarla ` +
+      `Sin informe utilizable en ${t.result_file} (no existe o esta vacio). Escribe el resultado de la tarea antes de cerrarla ` +
       `(o usa complete <repo> <taskId> --force como alternativa explícita).`,
     );
     process.exit(1);
@@ -300,7 +300,7 @@ Comandos:
       (sin --force no toca un estado existente; reiniciar es decision explicita)
   start|pause|status|next <repo>
   complete <repo> <taskId> [--fail|--force]
-      (done exige informe en result_file; --force es la alternativa explicita)
+      (done exige informe no vacio en result_file; --force es la alternativa explicita)
   issues <repo> [--dry|--dry-run]  (crea issues del draft + añade al Project; la simulacion
       no escribe en state.issues ni llama a gh: solo devuelve la previsualizacion)
   advance <repo> [--dry|--dry-run] (fuerza avance de fase; en simulacion solo previsualiza,

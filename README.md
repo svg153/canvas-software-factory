@@ -99,7 +99,8 @@ repo with `--force` (see contract below).
   persisted issues, in both dry and real mode, while still persisting after each
   creation for partial-failure recovery.
 - **`complete <taskId>` requires the report.** Closing a task as `done` demands the
-  result file written by the agent (`results/<id>.md`); otherwise it exits 1.
+  result file written by the agent (`results/<id>.md`) to exist **and be non-empty**
+  after trimming whitespace; otherwise it exits 1.
   `--force` closes without the report as the explicit alternative; `--fail` marks
   the task failed.
 - **Failed tasks don't loop forever.** A `--fail` task is never re-claimed, but the
