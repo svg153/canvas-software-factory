@@ -81,6 +81,12 @@ ${RESULTS_NOTE(state, task)}`;
 const DATA_OPEN = "<<<DATO-DE-ISSUE";
 const DATA_CLOSE = "DATO-DE-ISSUE>>>";
 
+// Esquema: colapsa whitespace a un espacio y inserta U+200B entre los caracteres de `<<<` y `>>>`,
+// de modo que ni DATO-DE-ISSUE>>> ni <<<DATO-DE-ISSUE puedan coincidir literalmente.
+export function flattenIssueText(text) {
+  return sanitizeIssueData(String(text ?? "").replace(/\s+/g, " ").trim());
+}
+
 // Neutraliza secuencias que podrían cerrar/abrir el bloque de datos antes de tiempo.
 export function sanitizeIssueData(text) {
   return String(text ?? "")
@@ -89,10 +95,10 @@ export function sanitizeIssueData(text) {
 }
 
 export function implementPrompt(state, task, issue) {
-  const body = issue.body
-    ? `\n${DATA_OPEN}\n${sanitizeIssueData(issue.body)}\n${DATA_CLOSE}\n`
-    : "";
-  return `# Implementar issue #${issue.number} — ${sanitizeIssueData(issue.title)}
+  const title = flattenIssueText(issue.title);
+  const inner = `TÍTULO: ${title}` + (issue.body ? `\n\n${sanitizeIssueData(issue.body)}` : "");
+  const body = `\n${DATA_OPEN}\n${inner}\n${DATA_CLOSE}\n`;
+  return `# Implementar issue #${issue.number} — ${title}
 
 Eres el agente de implementación de la Software Factory (round ${state.round}).
 
