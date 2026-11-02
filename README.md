@@ -68,7 +68,20 @@ skip the update confirmation and `-CopilotHome <path>` to install into a differe
 home (the test suite uses this so it never touches your real install). Then reload
 extensions in the app (or restart it).
 
-**Option B — manual:** copy `com.github.copilot/extensions/software-factory/` to
+**Option B — direct from GitHub (recommended, no clone):** ask Copilot in the
+GitHub Copilot app (same pattern used by awesome-copilot canvases):
+
+```text
+Install this extension: https://github.com/svg153/canvas-software-factory/tree/main/com.github.copilot/extensions/software-factory
+```
+
+Copilot downloads the committed folder into `~/.copilot/extensions/software-factory`
+(replacing the previous copy), generates `canvas.json` from the manifests and reloads
+extensions. To **update after merging to `main`**, ask again with the same URL (or run
+Option A from a refreshed clone). The skill (`skills/software-factory`) is not part of
+the canvas folder: install it with Option A or copy it manually.
+
+**Option C — manual:** copy `com.github.copilot/extensions/software-factory/` to
 `<COPILOT_HOME>/extensions/software-factory/`, generate its `canvas.json` with
 `node tools/make-canvas-manifest.mjs . <COPILOT_HOME>/extensions/software-factory`,
 and copy `skills/software-factory/` to `<COPILOT_HOME>/skills/software-factory/`.
