@@ -107,3 +107,52 @@ test("paused factory stops gracefully", async () => {
     assert.match(r.stdout, /status=paused/);
   } finally { await rm(repo, { recursive: true, force: true }); }
 });
+
+import { validateOptions } from "../sf-run.mjs";
+import { killTree } from "../lib/adapters/core.mjs";
+
+test("validateOptions rejects bad --timeout / --max-tasks", () => {
+  for (const t of ["abc", "0", "-5", "NaN", "Infinity", ""]) assert.match(validateOptions({ timeoutSec: t }).error, /--timeout/, t);
+  for (const m of ["abc", "0", "-1", "1.5"]) assert.match(validateOptions({ maxTasks: m }).error, /--max-tasks/, m);
+  assert.equal(validateOptions({ timeoutSec: "1.5", maxTasks: "3" }).timeoutSec, 1.5);
+  assert.equal(validateOptions({}).error, undefined);
+});
+
+test("sf-run --timeout abc exits 2 without running", async () => {
+  const repo = await started();
+  try {
+    const r = await run(repo, ["--timeout", "abc"]);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /--timeout inválido/);
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test("killTree uses taskkill on win32 and process-group kill on posix", () => {
+  const calls = [];
+  killTree(42, "win32", (...a) => calls.push(["exec", ...a]), () => calls.push(["kill"]));
+  assert.deepEqual(calls[0].slice(0, 3), ["exec", "taskkill", ["/T", "/F", "/PID", "42"]]);
+  const k = [];
+  killTree(42, "linux", () => k.push("exec"), (...a) => k.push(a));
+  assert.deepEqual(k, [[-42, "SIGKILL"]]);
+});
+
+test("--timeout 1 kills hung harness tree and exits 124", async () => {
+  const repo = await started();
+  const pidFile = join(repo, "child.pid");
+  const hangPath = join(here, "..", "test-support", "hang-adapter.mjs");
+  const t0 = Date.now();
+  try {
+    const r = await execFileAsync(process.execPath, [runPath, repo, "--adapter-module", hangPath, "--yes", "--timeout", "1"], {
+      env: { ...process.env, HANG_PID_FILE: pidFile },
+    }).then((x) => ({ code: 0, ...x }), (e) => ({ code: e.code, stderr: e.stderr }));
+    assert.equal(r.code, 124, r.stderr);
+    assert.ok(Date.now() - t0 < 5000, "exit took too long");
+    if (process.platform === "win32" && existsSync(pidFile)) {
+      const pid = Number(await readFile(pidFile, "utf8"));
+      await new Promise((res) => setTimeout(res, 300));
+      let alive = true;
+      try { process.kill(pid, 0); } catch { alive = false; }
+      assert.equal(alive, false, "child still alive");
+    }
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});

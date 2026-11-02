@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -14,6 +14,18 @@ export const HARNESSES = {
   opencode: { bin: 'opencode', base: ['run'], model: ['-m'], stdin: false, hint: 'npm i -g opencode-ai' },
   gemini: { bin: 'gemini', base: ['-p'], model: ['--model'], stdin: true, hint: 'npm i -g @google/gemini-cli' },
 };
+
+// Kills pid and all its descendants. execFn/killFn injectable for tests.
+export function killTree(pid, platform = process.platform, execFn = spawnSync, killFn = process.kill.bind(process)) {
+  if (!pid) return;
+  try {
+    if (platform === 'win32') execFn('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true });
+    else killFn(-pid, 'SIGKILL');
+  } catch { /* already gone */ }
+}
+
+const liveChildren = new Set();
+export function killAllChildren() { for (const pid of liveChildren) killTree(pid); liveChildren.clear(); }
 
 export function findOnPath(bin, env = process.env) {
   const dirs = (env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
@@ -54,10 +66,11 @@ function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, shell }) {
   return new Promise((resolve) => {
     let out = '', err = '', timedOut = false, settled = false;
     let child;
-    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(killTimer); resolve(r); };
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(killTimer); if (child?.pid) liveChildren.delete(child.pid); resolve(r); };
     let timer, killTimer;
     try {
-      child = spawn(cmd, args, { cwd, env: env || process.env, shell, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      child = spawn(cmd, args, { cwd, env: env || process.env, shell, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+      if (child.pid) liveChildren.add(child.pid);
     } catch (e) { return resolve({ ok: false, output: '', exitCode: null, error: e.message }); }
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { err += d; });

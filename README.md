@@ -101,7 +101,7 @@ repo with `--force` (see contract below).
 ```powershell
 # First init + start the factory, then run headless:
 node runner/sf.mjs init C:\path\to\repo --repo owner/name; node runner/sf.mjs start C:\path\to\repo
-node runner/sf-run.mjs C:\path\to\repo --harness codex [--model X] [--max-tasks 5] [--timeout 600000] [--dry-run] [--yes]
+node runner/sf-run.mjs C:\path\to\repo --harness codex [--model X] [--max-tasks 5] [--timeout 600] [--dry-run] [--yes]
 ```
 
 Loop: `next` → adapter `run()` (cwd=repo) → report check → `complete` (or `complete --fail`

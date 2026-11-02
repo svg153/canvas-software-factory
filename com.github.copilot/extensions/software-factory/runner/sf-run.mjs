@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // sf-run.mjs — headless autonomous executor: next -> adapter.run() -> complete.
-// Uso: node sf-run.mjs <repo> --harness <id> [--model X] [--max-tasks N] [--timeout MS]
+// Uso: node sf-run.mjs <repo> --harness <id> [--model X] [--max-tasks N] [--timeout SEG]
 //        [--dry-run] [--yes] [--adapter-module path]
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { loadState, saveState, logEvent, hasResult } from "./lib/state.mjs";
 import { resolve as resolveAdapter, DEFAULT_TIMEOUT_MS } from "./lib/adapters/index.mjs";
+import { killAllChildren } from "./lib/adapters/core.mjs";
 
 const execFileAsync = promisify(execFile);
 const sfPath = join(dirname(fileURLToPath(import.meta.url)), "sf.mjs");
@@ -100,15 +101,33 @@ export async function runFactory({
   return summary;
 }
 
+export const USAGE = "Uso: node sf-run.mjs <repo> --harness <id> [--model X] [--max-tasks N] [--timeout SEG] [--dry-run] [--yes]\n  --timeout SEG  límite total en segundos (número > 0); al expirar mata el árbol del harness y sale con 124. Por defecto: sin límite global.\n  Ctrl+C/SIGTERM mata el árbol del harness y sale con 130.";
+
+// Validates raw CLI values; returns { error } or the parsed options.
+export function validateOptions(o) {
+  if (o.maxTasks !== undefined && o.maxTasks !== Infinity) {
+    const n = Number(o.maxTasks);
+    if (!/^\d+$/.test(String(o.maxTasks)) || n < 1) return { error: "--max-tasks inválido: debe ser un entero positivo" };
+    o.maxTasks = n;
+  }
+  if (o.timeoutSec !== undefined) {
+    const n = Number(o.timeoutSec);
+    if (String(o.timeoutSec).trim() === "" || !Number.isFinite(n) || n <= 0) return { error: "--timeout inválido: debe ser un número positivo de segundos" };
+    o.timeoutSec = n;
+  }
+  return o;
+}
+
 function parseArgs(argv) {
   const o = { repo: null, maxTasks: Infinity, yes: false, dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => argv[++i];
     if (a === "--harness") o.harness = val();
+    else if (a === "--help" || a === "-h") o.help = true;
     else if (a === "--model") o.model = val();
-    else if (a === "--max-tasks") o.maxTasks = Number(val());
-    else if (a === "--timeout") o.timeoutMs = Number(val());
+    else if (a === "--max-tasks") o.maxTasks = val();
+    else if (a === "--timeout") o.timeoutSec = val();
     else if (a === "--adapter-module") o.adapterModule = val();
     else if (a === "--dry-run") o.dryRun = true;
     else if (a === "--yes") o.yes = true;
@@ -119,17 +138,21 @@ function parseArgs(argv) {
 
 async function main() {
   const o = parseArgs(process.argv.slice(2));
+  if (o.help) { console.log(USAGE); process.exit(0); }
   if (!o.repo || (!o.harness && !o.adapterModule)) {
-    console.error("Uso: node sf-run.mjs <repo> --harness <id> [--model X] [--max-tasks N] [--timeout MS] [--dry-run] [--yes]");
+    console.error(USAGE);
     process.exit(2);
   }
-  if (!Number.isFinite(o.maxTasks) && o.maxTasks !== Infinity) { console.error("--max-tasks inválido"); process.exit(2); }
+  const v = validateOptions(o);
+  if (v.error) { console.error(v.error); process.exit(2); }
   if (o.adapterModule) {
     const m = await import(pathToFileURL(resolve(o.adapterModule)).href);
     o.adapter = m.default || m.adapter;
   }
-  // Ctrl+C: la tarea en curso queda awaiting_agent (reclamarla de nuevo es idempotente).
-  process.on("SIGINT", () => { console.error("\n[sf-run] interrumpido; la tarea sigue awaiting_agent"); process.exit(130); });
+  const bail = (code, msg) => { console.error(msg); killAllChildren(); process.exit(code); };
+  // La tarea en curso queda awaiting_agent (reclamarla de nuevo es idempotente).
+  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => bail(130, `[sf-run] interrumpido (${sig}); árbol del harness terminado, la tarea sigue awaiting_agent`));
+  if (o.timeoutSec) setTimeout(() => bail(124, `[sf-run] timeout de ${o.timeoutSec}s excedido; árbol del harness terminado`), o.timeoutSec * 1000);
   const s = await runFactory(o);
   process.exit(s.failed ? 1 : 0);
 }
