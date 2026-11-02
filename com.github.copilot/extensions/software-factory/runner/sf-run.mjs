@@ -43,6 +43,7 @@ export async function runFactory({
   }
   if (!yes) log("[sf-run] sin --yes: solo work orders de solo-lectura (discover/plan/grill/review); implement se omite");
   const attempted = new Set();
+  let idleAdvances = 0; // next can advance a phase without emitting tasks; ask again (bounded)
   while (summary.attempted.length < maxTasks) {
     const st = await sfJson("status", repo);
     if (st.status !== "running") { summary.stopped = `factory status=${st.status}`; break; }
@@ -56,6 +57,7 @@ export async function runFactory({
       }
     }
     const task = runnable[0];
+    if (!task && !open.length && next.advance?.advanced && ++idleAdvances <= 20) continue;
     if (!task) { summary.stopped = open.length ? "solo quedan tareas que requieren --yes" : "sin tareas pendientes"; break; }
     if (dryRun) {
       log(`[sf-run] DRY-RUN plan: ${task.id} (${task.phase}) "${task.title}" harness=${ad.id || harness} model=${model || "default"}`);
