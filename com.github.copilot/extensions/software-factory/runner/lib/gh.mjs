@@ -56,6 +56,69 @@ export function repoSlug(state) {
   );
 }
 
+// gh --json emite un array; cualquier otra salida (objeto, basura, "") se lee como
+// vacío para que una ingesta nunca reviente el bucle.
+function parseJsonArray(out) {
+  try {
+    const parsed = JSON.parse(out);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+// `gh project item-list --format json` devuelve { "items": [ ... ] }.
+function parseProjectItems(out) {
+  try {
+    const parsed = JSON.parse(out);
+    return Array.isArray(parsed?.items) ? parsed.items : [];
+  } catch {
+    return [];
+  }
+}
+
+// Ingesta mecánica del repo: snapshot del trabajo ya abierto (issues abiertas, PRs
+// abiertas e items del Project). Es de SOLO LECTURA y resiliente: cada fuente que
+// falla se degrada a [] y anota el motivo; nunca lanza salvo slug inválido (que
+// decide el llamador). Así un repo "a medias" puede continuar de forma autónoma.
+export async function readRepoInventory(state, { runGh = gh } = {}) {
+  const slug = repoSlug(state); // lanza si el repo no es owner/name: intake lo captura
+  const inv = {
+    fetched_at: new Date().toISOString(),
+    issues: [],
+    prs: [],
+    project: [],
+    notes: "",
+  };
+  try {
+    inv.issues = parseJsonArray(await runGh([
+      "issue", "list", "--repo", slug, "--state", "open", "--limit", "200",
+      "--json", "number,title,url,labels",
+    ]));
+  } catch (e) {
+    inv.notes += `issue list: ${e.message}\n`;
+  }
+  try {
+    inv.prs = parseJsonArray(await runGh([
+      "pr", "list", "--repo", slug, "--state", "open", "--limit", "200",
+      "--json", "number,title,url,labels,reviewDecision",
+    ]));
+  } catch (e) {
+    inv.notes += `pr list: ${e.message}\n`;
+  }
+  if (state.project_id) {
+    const owner = state.project_owner || slug.split("/")[0];
+    try {
+      inv.project = parseProjectItems(await runGh([
+        "project", "item-list", String(state.project_id), "--owner", owner, "--format", "json",
+      ]));
+    } catch (e) {
+      inv.notes += `project item-list: ${e.message}\n`;
+    }
+  }
+  return inv;
+}
+
 // Create issues from the draft JSON and add them to the GitHub Project (if set).
 // Draft schema: { "issues": [ { title, body, labels: [..], number? } ] }
 export async function createIssuesFromDraft(state, {
@@ -69,7 +132,7 @@ export async function createIssuesFromDraft(state, {
     "utf8",
   ).catch(() => '{"issues":[]}');
   const draft = JSON.parse(draftRaw);
-  const known = [...state.issues];
+const known = [...state.issues];
   const isKnown = (it) => known.some((k) => sameIssue(k, it));
   const pending = (draft.issues || []).filter((it) => it?.title && !isKnown(it));
   // Valida el slug antes de crear nada (también en dry-run): config inválida = fallo
@@ -103,14 +166,31 @@ export async function createIssuesFromDraft(state, {
   let nextFakeNumber = state.issues.reduce((max, i) => Math.max(max, Number(i.number) || 0), 900);
 
   for (const it of draft.issues || []) {
-    if (!it?.title || isKnown(it)) continue;
-    // Deduplicación DENTRO de la invocación (dry y real): dos títulos iguales en el
-    // mismo draft se procesan una sola vez, no solo contra lo ya persistido.
-    known.push({ number: it.number, url: it.url, title: it.title });
-    const wanted = Array.isArray(it.labels) ? it.labels : [];
-    const usable = dryRun ? wanted : [];
-    if (!dryRun) for (const l of wanted) if (await ensureLabel(l)) usable.push(l);
-    const labels = usable.flatMap((l) => ["--label", l]);
+      if (!it?.title || isKnown(it)) continue;
+      // Deduplicación DENTRO de la invocación (dry y real): dos títulos iguales en el
+      // mismo draft se procesan una sola vez, no solo contra lo ya persistido.
+      known.push({ number: it.number, url: it.url, title: it.title });
+      // Adopción de trabajo YA abierto: si el ítem del draft trae un `number` real, NO se
+      // crea (existiría duplicado); se registra en state.issues para que `implement` lo
+      // tome como tarea y se añada al Project. Así la fábrica continúa un repo "a medias".
+      const adoptNum = Number(it.number);
+      if (Number.isInteger(adoptNum) && adoptNum > 0) {
+        const url = (typeof it.url === "string" && it.url) || `https://github.com/${repoSlug(state)}/issues/${adoptNum}`;
+        if (dryRun) {
+          created.push({ title: it.title, url, number: adoptNum, adopted: true, dry: true });
+          continue;
+        }
+        state.issues.push({ title: it.title, url, number: adoptNum, adopted: true, at: new Date().toISOString() });
+        await persistState();
+        await logAndAdd(state, url, runGh);
+        await persistState();
+        created.push({ title: it.title, url, number: adoptNum, adopted: true });
+        continue;
+      }
+      const wanted = Array.isArray(it.labels) ? it.labels : [];
+      const usable = dryRun ? wanted : [];
+      if (!dryRun) for (const l of wanted) if (await ensureLabel(l)) usable.push(l);
+      const labels = usable.flatMap((l) => ["--label", l]);
     const args = [
       "issue", "create",
       "--repo", repoSlug(state),

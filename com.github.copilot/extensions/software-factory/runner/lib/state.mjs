@@ -37,6 +37,10 @@ export function defaultState(repoPath, opts = {}) {
     // fase plan descompone en 1+ issues. Ciclo: new -> planned (al salir de plan)
     // -> triaged (al salir de grill). Status lo mueve la máquina de fases, no el agente.
     seeds: [],
+    // Ingesta del repo: snapshot mecánico (gh) del trabajo YA abierto — issues y PRs
+    // abiertas y items del Project — para que un repo "a medias" continúe de forma
+    // autónoma. Lo rellena `sf.mjs intake`; null = aún sin ingesta.
+    inventory: null,
     updated_at: nowIso(),
   };
 }

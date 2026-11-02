@@ -40,6 +40,8 @@ document.getElementById("ideaBtn").onclick = async () => {
   if (!result.error) input.value = "";
 };
 
+document.getElementById("intakeBtn").onclick = () => action("run_intake");
+
 try {
   const state = await (await fetch(routeWithRepo("/state", repo))).json();
   renderState(state.status === "missing" ? null : state);

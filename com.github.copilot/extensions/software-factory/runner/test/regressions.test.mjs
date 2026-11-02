@@ -12,8 +12,8 @@ import { request as httpRequest } from "node:http";
 import { createFactoryServer } from "../lib/http.mjs";
 import { createRepoAllowlist } from "../lib/allowlist.mjs";
 import { symlink } from "node:fs/promises";
-import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
-import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "../lib/actions.mjs";
+import { createIssuesFromDraft, projectItemAddArgs, readRepoInventory, repoSlug } from "../lib/gh.mjs";
+import { initRunnerArgs, ideaRunnerArgs, intakeRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, failedTasks, loadState, saveState, updateState, withStateLock, paths, newTask, writeWorkOrder } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt, planPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
@@ -1635,4 +1635,219 @@ test("crash mid-write leaves state.json parseable and writeWorkOrder is atomic",
   assert.equal(await readFile(task.prompt_file, "utf8"), "# orden\n");
   const src = await readFile(join(extensionDir, "runner", "lib", "state.mjs"), "utf8");
   assert.match(src, /atomicWrite\(task\.prompt_file/);
+
+// ---------- Ingesta del repo (continuar un repo "a medias") ----------
+
+function makeRunGh(canned, calls = []) {
+  return async (args) => {
+    calls.push(args);
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify(canned.issues ?? []);
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify(canned.prs ?? []);
+    if (args[0] === "project" && args[1] === "item-list") return JSON.stringify({ items: canned.project ?? [] });
+    return "[]";
+  };
+}
+
+test("readRepoInventory parses issues/PRs/project arrays from gh json", async () => {
+  const calls = [];
+  const state = { repo: "org/repo", repo_path: "/repo", project_id: "17", project_owner: "org" };
+  const inv = await readRepoInventory(state, {
+    runGh: makeRunGh({
+      issues: [{ number: 5, title: "Bug login", url: "u5", labels: [] }],
+      prs: [{ number: 9, title: "Add dark mode", url: "u9", labels: [], reviewDecision: "REVIEW_REQUIRED" }],
+      project: [{ id: "PVTI_1", content: { number: 5 } }],
+    }, calls),
+  });
+  assert.equal(inv.issues.length, 1);
+  assert.equal(inv.issues[0].number, 5);
+  assert.equal(inv.prs[0].number, 9);
+  assert.equal(inv.project.length, 1);
+  assert.equal(inv.notes, "");
+  assert.ok(inv.fetched_at, "marca cuándo se tomó el snapshot");
+  // project item-list usa el owner explícito del project
+  const projCall = calls.find((c) => c[0] === "project");
+  assert.ok(projCall.includes("org"), "usa project_owner si está definido");
+});
+
+test("readRepoInventory is resilient: gh failures degrade to [] with a note, never throw", async () => {
+  const state = { repo: "org/repo", repo_path: "/repo", project_id: null };
+  const inv = await readRepoInventory(state, {
+    runGh: async (args) => {
+      if (args[0] === "issue") throw new Error("network down");
+      return "{}"; // salida no-array (como el gh falso de tests) -> []
+    },
+  });
+  assert.deepEqual(inv.issues, [], "fallo de gh -> [] en lugar de lanzar");
+  assert.deepEqual(inv.prs, [], "salida basura -> []");
+  assert.match(inv.notes, /issue list: network down/);
+});
+
+test("readRepoInventory throws only on invalid slug (intake catches it)", async () => {
+  await assert.rejects(
+    readRepoInventory({ repo: "not-a-slug", repo_path: "/repo" }, { runGh: async () => "[]" }),
+    /repo GitHub válido/,
+  );
+});
+
+test("createIssuesFromDraft adopts a draft item with a real number (no gh create, no duplicate)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-adopt-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(join(repo, ".software-factory"), { recursive: true });
+  await writeFile(
+    join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Terminar la feature X", body: "b", number: 55 }] }),
+  );
+  const state = { repo_path: repo, repo: "org/repo", project_id: null, issues: [], notes: "" };
+  const calls = [];
+  const created = await createIssuesFromDraft(state, {
+    runGh: async (args) => { calls.push(args); return "https://github.com/org/repo/issues/999"; },
+    persistState: async () => {},
+  });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].adopted, true);
+  assert.equal(created[0].number, 55);
+  assert.equal(state.issues.length, 1);
+  assert.equal(state.issues[0].number, 55);
+  assert.equal(state.issues[0].adopted, true);
+  // NUNCA se llamó a gh issue create (la issue ya existe)
+  assert.ok(calls.every((c) => !(c[0] === "issue" && c[1] === "create")), "adoptar no crea una issue nueva");
+});
+
+test("createIssuesFromDraft skips adopting a number already tracked", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-adopt-dup-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(join(repo, ".software-factory"), { recursive: true });
+  await writeFile(
+    join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Ya seguida", body: "b", number: 55 }] }),
+  );
+  const state = {
+    repo_path: repo, repo: "org/repo", project_id: null, notes: "",
+    issues: [{ title: "Ya seguida (distinto título)", url: "u", number: 55 }],
+  };
+  const calls = [];
+  const created = await createIssuesFromDraft(state, {
+    runGh: async (args) => { calls.push(args); return "https://github.com/org/repo/issues/999"; },
+    persistState: async () => {},
+  });
+    assert.equal(created.length, 0, "no se re-adopota un número ya presente");
+  assert.equal(state.issues.length, 1);
+});
+
+test("createIssuesFromDraft adoption in dry-run previews only, no gh, no state mutation", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-adopt-dry-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(join(repo, ".software-factory"), { recursive: true });
+  await writeFile(
+    join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Adoptar en seco", body: "b", number: 77 }] }),
+  );
+  const state = { repo_path: repo, repo: "org/repo", project_id: null, issues: [], notes: "" };
+  const calls = [];
+  const created = await createIssuesFromDraft(state, {
+    dryRun: true,
+    runGh: async (args) => { calls.push(args); return "https://github.com/org/repo/issues/1"; },
+    persistState: async () => {},
+  });
+  assert.equal(created[0].adopted, true);
+  assert.equal(created[0].dry, true);
+  assert.equal(created[0].number, 77);
+  assert.deepEqual(calls, [], "dry-run no invoca gh");
+  assert.equal(state.issues.length, 0, "dry-run no muta state.issues");
+});
+
+test("intakeRunnerArgs builds the intake command", () => {
+  assert.deepEqual(intakeRunnerArgs("/some/repo"), ["intake", "/some/repo"]);
+});
+
+test("intake command stores inventory in state (fake gh yields empty arrays)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-intake-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+
+  await run("init", repo, "--repo", "org/repo");
+  const out = JSON.parse((await run("intake", repo)).stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.inventory.issues, 0);
+  assert.equal(out.inventory.prs, 0);
+
+  const state = await loadState(repo);
+  assert.ok(state.inventory, "state.inventory queda persistido");
+  assert.deepEqual(state.inventory.issues, []);
+  // intake sí llamó a gh (issue list + pr list)
+  const calls = await ghCalls(join(tempDir, "gh-calls.log"));
+  assert.ok(calls.some((c) => c[0] === "issue" && c[1] === "list"), "intake consulta issues abiertas");
+  assert.ok(calls.some((c) => c[0] === "pr" && c[1] === "list"), "intake consulta PRs abiertas");
+
+  // intake escribe estado: rechaza --dry igual que idea
+  await assert.rejects(execFileAsync(process.execPath, [runnerPath, "intake", repo, "--dry"], { env: ghEnv(tempDir) }), (e) => e.code === 2);
+});
+
+test("discoverPrompt folds in the inventory when present and hints intake when absent", () => {
+  const task = { round: 1, id: "r1-discover-01", result_file: "/repo/.software-factory/results/r1-discover-01.md" };
+  const withInv = discoverPrompt(
+    {
+      repo: "org/repo", repo_path: "/repo", round: 1,
+      inventory: { issues: [{ number: 5, title: "Bug login" }], prs: [{ number: 9, title: "Dark mode" }], project: [], notes: "" },
+    },
+    task,
+  );
+  assert.match(withInv, /TRABAJO YA ABIERTO/);
+  assert.match(withInv, /#5 Bug login/);
+  assert.match(withInv, /PR #9 Dark mode|PRs abiertas/);
+  assert.match(withInv, /cerrar|avanzar/i);
+
+  const noInv = discoverPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, inventory: null }, task);
+  assert.match(noInv, /intake/, "sin inventario sugiere ejecutar intake");
+});
+
+test("planPrompt dedups against inventory and explains adoption via number", () => {
+  const state = {
+    repo: "org/repo", repo_path: "/repo", round: 1, tasks: [],
+    inventory: {
+      issues: [{ number: 5, title: "Bug login" }],
+      prs: [{ number: 9, title: "Dark mode" }],
+      project: [], notes: "",
+    },
+  };
+  const prompt = planPrompt(state, { round: 1 });
+  assert.match(prompt, /TRABAJO ABIERTO EXISTENTE/);
+  assert.match(prompt, /#5 Bug login/);
+  assert.match(prompt, /"number"/, "explica el campo number para adoptar");
+  assert.match(prompt, /NO creees|no recrees|NUNCA pongas/i);
+
+  const noInv = planPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, tasks: [], inventory: null }, { round: 1 });
+  assert.doesNotMatch(noInv, /TRABAJO ABIERTO EXISTENTE/);
+});
+
+test("canvas and UI wire run_intake to the intake action and render inventory", async () => {
+  const ext = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  assert.match(ext, /name: "run_intake"/);
+  assert.match(ext, /applyAction\(repoDir, "intake"\)/);
+  assert.match(ext, /actionName === "intake"[\s\S]{0,240}intakeRunnerArgs/);
+
+  const app = await readFile(join(extensionDir, "app.mjs"), "utf8");
+  assert.match(app, /intakeBtn[\s\S]{0,120}action\("run_intake"/);
+
+  const doc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "inventory"]);
+  renderState({
+    status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [],
+    inventory: { issues: [{ number: 5, title: "Bug login" }], prs: [], project: [], notes: "" },
+  }, doc);
+  const head = doc.getElementById("inventory").children[0];
+  assert.match(head.textContent, /Issues abiertas: 1/);
+  assert.equal(doc.getElementById("inventory").children[1].textContent, "#5 Bug login");
+
+  // doc sin contenedor #inventory no debe romperse
+  const minimal = new FakeDocument(["status", "round", "pipeline", "tasks", "issues"]);
+  renderState({ status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [], inventory: { issues: [{ number: 1, title: "x" }] } }, minimal);
+  // inventory null muestra el vacío
+  const emptyDoc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "inventory"]);
+  renderState({ status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [], inventory: null }, emptyDoc);
+  });
 });

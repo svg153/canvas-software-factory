@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
 import { createFactoryServer } from "./runner/lib/http.mjs";
 import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
-import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
+import { initRunnerArgs, ideaRunnerArgs, intakeRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
 import { updateState } from "./runner/lib/state.mjs";
 
@@ -94,6 +94,12 @@ async function applyAction(repoDir, actionName, input = {}) {
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
     const out = await promisify(execFile)("node", [RUNNER, ...ideaRunnerArgs(repoDir, input)], { windowsHide: true });
+    return JSON.parse(out.stdout.trim());
+  }
+  if (actionName === "intake") {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const out = await promisify(execFile)("node", [RUNNER, ...intakeRunnerArgs(repoDir)], { windowsHide: true });
     return JSON.parse(out.stdout.trim());
   }
   if (actionName === "next") {
@@ -199,6 +205,21 @@ const factoryCanvas = createCanvas({
       handler({ input }) {
         const repoDir = input?.repo || session?.workspacePath || process.cwd();
         return applyAction(repoDir, "idea", { idea: input?.idea });
+      },
+    },
+    {
+      name: "run_intake",
+      description:
+        "Ingesta del repo: lee con gh el trabajo YA abierto (issues abiertas, PRs abiertas e items del Project) y lo guarda en state.inventory. Es de solo lectura y resiliente. Discover/plan (round 1) lo usan para continuar un repo 'a medias' y no recrear issues existentes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+        },
+      },
+      handler({ input }) {
+        const repoDir = input?.repo || session?.workspacePath || process.cwd();
+        return applyAction(repoDir, "intake");
       },
     },
     {
