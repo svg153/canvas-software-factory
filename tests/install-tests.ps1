@@ -230,6 +230,48 @@ It "aborta si falta tools/make-canvas-manifest.mjs y no escribe nada" {
   }
 }
 
+Write-Host "`n== Deteccion de deriva (-Check) y release =="
+It "install.ps1 -Check falla sin instalacion y no escribe nada" {
+  $h = New-TempHome
+  try {
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "install.ps1") -CopilotHome $h -Check *> $null
+    Assert-True ($LASTEXITCODE -eq 1) "-Check deberia salir 1 sin instalacion (exit $LASTEXITCODE)"
+    Assert-True (-not (Test-Path (Join-Path $h "extensions"))) "-Check escribio en COPILOT_HOME"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "install.ps1 -Check pasa tras instalar y detecta version/skill desfasadas" {
+  $h = New-TempHome
+  try {
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "install.ps1") -CopilotHome $h -Force *> $null
+    Assert-True ($LASTEXITCODE -eq 0) "instalacion fallo"
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "install.ps1") -CopilotHome $h -Check *> $null
+    Assert-True ($LASTEXITCODE -eq 0) "-Check deberia pasar tras instalar (exit $LASTEXITCODE)"
+    Add-Content (Join-Path $h "skills\software-factory\SKILL.md") "drift"
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "install.ps1") -CopilotHome $h -Check *> $null
+    Assert-True ($LASTEXITCODE -eq 1) "-Check no detecto SKILL.md desfasada"
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "install.ps1") -CopilotHome $h -Force *> $null
+    $pkgPath = Join-Path $h "extensions\software-factory\package.json"
+    (Get-Content $pkgPath -Raw) -replace '"version": "[^"]+"', '"version": "0.0.0"' | Set-Content $pkgPath
+    & pwsh -NoProfile -File (Join-Path $RepoRoot "install.ps1") -CopilotHome $h -Check *> $null
+    Assert-True ($LASTEXITCODE -eq 1) "-Check no detecto version instalada desfasada"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "tools/check-release.mjs acepta el repo y la extension declara engines.node" {
+  $v = & cmd /c ("node `"" + (Join-Path $RepoRoot "tools\check-release.mjs") + "`" `"" + $RepoRoot + "`" 2>nul")
+  Assert-True ($LASTEXITCODE -eq 0) "check-release.mjs fallo (exit $LASTEXITCODE)"
+  $plugin = Get-Content (Join-Path $RepoRoot "plugin.json") -Raw | ConvertFrom-Json
+  Assert-True ("$v".Trim() -eq $plugin.version) "version emitida $v != $($plugin.version)"
+  $pkg = Get-Content (Join-Path $RepoRoot "com.github.copilot\extensions\software-factory\package.json") -Raw | ConvertFrom-Json
+  Assert-True ($pkg.engines.node -eq ">=20") "falta engines.node"
+}
+It "release.yml, CODEOWNERS, SECURITY y CONTRIBUTING existen" {
+  foreach ($f in @(".github\workflows\release.yml", ".github\CODEOWNERS", "SECURITY.md", "CONTRIBUTING.md", ".github\PULL_REQUEST_TEMPLATE.md")) {
+    Assert-True (Test-Path (Join-Path $RepoRoot $f)) "falta $f"
+  }
+  $rel = Get-Content (Join-Path $RepoRoot ".github\workflows\release.yml") -Raw
+  Assert-True ($rel -match 'contents: write') "release.yml sin permiso contents: write"
+  Assert-True ($rel -notmatch '(?m)^permissions:') "release.yml no debe dar permisos globales"
+}
 Write-Host "`n== Resultado =="
 Write-Host "Pasadas: $script:Passed | Fallidas: $script:Failed"
 if ($script:Failed -gt 0) {

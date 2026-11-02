@@ -1,0 +1,55 @@
+name: Release
+
+# Publishes a GitHub release when main carries a version that has no tag yet.
+# Bump the version in a PR first (node tools/bump-version.mjs patch|minor|major).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify versions, CHANGELOG and skill sync
+        id: check
+        run: echo "version=$(node tools/check-release.mjs)" >> "$GITHUB_OUTPUT"
+      - name: Run regression tests
+        run: npm test
+        working-directory: com.github.copilot/extensions/software-factory
+      - name: Skip if tag already exists
+        id: tag
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${{ steps.check.outputs.version }}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.check.outputs.version }} already exists; nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Extract release notes
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          v="${{ steps.check.outputs.version }}"
+          awk -v h="## v$v" '$0==h {f=1; next} /^## / {f=0} f' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+      - name: Create tag and release
+        if: steps.tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="v${{ steps.check.outputs.version }}"
+          sha256sum skills/software-factory/SKILL.md > SKILL.sha256
+          gh release create "$v" --target "$GITHUB_SHA" --title "$v" \
+            --notes-file release-notes.md SKILL.sha256
