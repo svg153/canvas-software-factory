@@ -25,20 +25,27 @@ export async function createIssuesFromDraft(state, { dryRun = false } = {}) {
   const existing = new Set(state.issues.map((i) => i.title));
   const created = [];
 
+  // gh issue create exige owner/repo: con "." o vacío fallaría cada issue.
+  if (!dryRun && !/^[^/]+\/[^/]+$/.test(state.repo || "")) {
+    throw new Error(
+      `state.repo="${state.repo}" no es owner/repo. Ejecuta: sf.mjs init <repo> --repo owner/name --force`,
+    );
+  }
+
   for (const it of draft.issues || []) {
     if (!it?.title || existing.has(it.title)) continue;
     const labels = (it.labels || []).flatMap((l) => ["--label", l]);
     const args = [
       "issue", "create",
-      "--repo", state.repo || ".",
+      "--repo", state.repo,
       "--title", it.title,
       "--body", it.body || "",
       ...labels,
     ];
     if (dryRun) {
-      const fake = { title: it.title, url: "(dry-run)", number: 900 + created.length + 1 };
-      created.push(fake);
-      state.issues.push({ ...fake, at: new Date().toISOString() });
+      // Los ficticios van SOLO al output: si entran en state.issues, la fase
+      // implement crearía work orders contra números de issue inexistentes.
+      created.push({ title: it.title, url: "(dry-run)", number: 900 + created.length + 1, dry: true });
       continue;
     }
     const url = await gh(args);

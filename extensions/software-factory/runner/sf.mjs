@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import {
   loadState, saveState, defaultState, logEvent, paths,
   newTask, writeWorkOrder, openTasks, PHASES,
+  hasResult,
 } from "./lib/state.mjs";
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
@@ -38,7 +39,7 @@ const phasePlan = {
         .map((t) => t.meta.issue.number),
     );
     return (s.issues || [])
-      .filter((i) => i.number && !claimed.has(i.number))
+      .filter((i) => i.number && !i.dry && !claimed.has(i.number))
       .map((i) => ({
         title: `Implementar #${i.number} ${i.title}`,
         prompt: (st, t) => implementPrompt(st, t, i),
@@ -63,6 +64,16 @@ async function cmdInit() {
   const repo = flags("repo") || "";
   const project = flags("project") || "";
   const rounds = flags("rounds") || 3;
+  // Re-init sin --force borra el progreso (tasks/issues); 3 inits previos lo demostraron.
+  const existing = await loadState(repoPath);
+  if (existing && !flags("force")) {
+    console.error(
+      `Ya existe estado en ${paths(repoPath).root}: fase ${existing.phase}, round ${existing.round}, ` +
+      `${existing.tasks.length} tasks, ${existing.issues.length} issues. ` +
+      `Usa --force para sobrescribir (perderás el progreso).`,
+    );
+    process.exit(1);
+  }
   const state = defaultState(repoPath, { repo, project, rounds });
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
@@ -76,6 +87,7 @@ async function cmdStatus() {
     phase: state.phase, phase_index: `${PHASES.indexOf(state.phase) + 1}/${PHASES.length}`,
     tasks_open: openTasks(state).length, tasks_done: state.tasks.filter((t) => t.status === "done").length,
     issues_created: state.issues.length, updated_at: state.updated_at,
+    notes: (state.notes || "").trim(),
   };
   console.log(JSON.stringify(summary, null, 2));
 }
@@ -144,7 +156,15 @@ async function cmdComplete() {
   const state = need(await loadState(repoPath));
   const t = state.tasks.find((x) => x.id === taskId);
   if (!t) { console.error(`task ${taskId} no existe`); process.exit(1); }
-  t.status = extra.includes("--fail") ? "failed" : "done";
+  const fail = extra.includes("--fail");
+  // Contract de la skill: cerrar "done" exige informe escrito en result_file.
+  if (!fail && !extra.includes("--force") && !(await hasResult(t))) {
+    console.error(
+      `Sin informe en ${t.result_file}. Escribe el resultado de la tarea antes de cerrarla (o usa --force).`,
+    );
+    process.exit(1);
+  }
+  t.status = fail ? "failed" : "done";
   t.completed_at = new Date().toISOString();
   await logEvent(repoPath, `task ${taskId} -> ${t.status}`);
   await saveState(repoPath, state);
@@ -182,9 +202,9 @@ async function main() {
     default:
       console.log(`sf.mjs — Software Factory runner
 Comandos:
-  init <repo> --repo owner/repo [--project NNN] [--rounds 3]
+      init <repo> --repo owner/repo [--project NNN] [--rounds 3] [--force]
   start|pause|status|next <repo>
-  complete <repo> <taskId> [--fail]
+      complete <repo> <taskId> [--fail|--force]
   issues <repo> [--dry-run]   (crea issues del draft + añade al Project)
   advance <repo>              (fuerza avance de fase)`);
   }
