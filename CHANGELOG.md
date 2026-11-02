@@ -1,9 +1,22 @@
 # Changelog
 
-## v0.1.2
+## v0.1.3
+
+### Added
+- Autofill de `owner/repo` (#82): al pulsar «Usar repo» (o el botón «Detectar»), el
+  servidor deriva el identificador GitHub del workspace con `git remote get-url origin`
+  (https, ssh y scp-form) y rellena el campo; no pisa ediciones manuales.
+- Detección del Project vinculado (#83): acción `autofill` consulta GraphQL
+  `projectsV2` vía `gh api` y rellena «Project board ID» y «Project owner» si hay un
+  único Project; lista las opciones si hay varios; registra el motivo si no hay o
+  falla la API.
+- Botón «Detectar» en la barra Configurar para lanzar el autofill bajo demanda.
 
 ### Changed
-- TODO: describe this release.
+- El campo Project se rotula ahora «Project board ID (opc.)» con tooltip que explica
+  que es el número de la URL del board (`.../projects/5` → 5) o el id `PVT_xxx` (#84).
+  La clave del payload (`project`) no cambia.
+
 ## v0.1.2
 
 ### Fixed

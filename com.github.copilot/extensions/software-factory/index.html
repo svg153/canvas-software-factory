@@ -70,7 +70,8 @@
     <h2 style="margin-top:14px">Configurar</h2>
     <div class="init">
       <input id="ghrepo" placeholder="owner/repo" size="18" title="Repositorio en GitHub, formato owner/name (ej. svg153/canvas-software-factory)" />
-      <input id="project" placeholder="Project nº (opc.)" size="14" title="NÚMERO del GitHub Project (no su nombre). Vacío = sin Project." />
+      <input id="project" placeholder="Project board ID (opc.)" size="18" title="NÚMERO del board de GitHub Project (el de su URL, p. ej. .../projects/5 → 5; o el id PVT_xxx). Vacío = sin Project. Usa «Detectar» para rellenarlo desde el repo." />
+      <button class="btn" id="detectBtn" title="Detectar owner/repo desde git remote origin y el Project vinculado al repo (gh api)">Detectar</button>
       <input id="projectOwner" placeholder="Project owner (opc.)" size="18" title="Usuario u organización dueña del Project. Por defecto: el owner del repo." />
       <input id="rounds" placeholder="rounds" size="6" value="3" title="Número de rounds del bucle" />
       <button class="btn" id="initBtn">Init</button>

@@ -11,6 +11,8 @@ import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
 import { initRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
 import { updateState } from "./runner/lib/state.mjs";
+import { deriveGithubRepo } from "./runner/lib/git.mjs";
+import { listLinkedProjects } from "./runner/lib/gh.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, "runner", "sf.mjs");
@@ -98,6 +100,21 @@ async function applyAction(repoDir, actionName, input = {}) {
     const { promisify } = await import("node:util");
     const out = await promisify(execFile)("node", [RUNNER, ...initRunnerArgs(repoDir, input)], { windowsHide: true });
     return { status: "inicializado", output: out.stdout.trim() };
+  }
+  if (actionName === "autofill") {
+    // #82/#83: derivar owner/repo del remote y detectar el Project vinculado.
+    const githubRepo = await deriveGithubRepo(repoDir);
+    const out = { status: "autofill", github_repo: githubRepo, projects: [] };
+    if (githubRepo) {
+      try {
+        out.projects = await listLinkedProjects(githubRepo);
+      } catch (e) {
+        out.note = `gh api falló: ${String(e.message).slice(0, 160)}`;
+      }
+    } else {
+      out.note = "el repo no tiene remote origin en github.com";
+    }
+    return out;
   }
   if (actionName === "next") {
     const { execFile } = await import("node:child_process");

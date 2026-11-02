@@ -102,6 +102,9 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 #    session, so the panel starts without a repo: type the absolute path of your
 #    git workspace in the "Repo" field and press "Usar repo" (or open the canvas
 #    with input.repo=<absolute path> if your client supports passing open input).
+#    On "Usar repo" the panel auto-detects owner/repo from `git remote origin` and
+#    the GitHub Project linked to the repo (single match fills "Project board ID"
+#    and owner; several are listed in the log). "Detectar" repeats this on demand.
 
 # 3. ▶ Play. Watch the pipeline; the agent executes work orders and marks them done.
 #    ⏸ Pause anytime. State lives in <repo>/.software-factory/.
