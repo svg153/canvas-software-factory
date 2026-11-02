@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "main": "extension.mjs",
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "@github/copilot-sdk": "1.0.1"
   }

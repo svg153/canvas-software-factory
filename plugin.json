@@ -7,8 +7,8 @@
     "name": "Sergio Valverde",
     "url": "https://github.com/svg153"
   },
-  "homepage": "https://github.com/svg153/software-factory",
-  "repository": "https://github.com/svg153/software-factory",
+  "homepage": "https://github.com/svg153/canvas-software-factory",
+  "repository": "https://github.com/svg153/canvas-software-factory",
   "license": "MIT",
   "keywords": [
     "agent-plugins",
@@ -25,14 +25,6 @@
   "extensions": {
     "com.github.copilot": {
       "logo": "assets/preview.png"
-    },
-    "com.github.awesome-copilot": {
-      "extensions": [
-        "./extensions/software-factory"
-      ],
-      "skills": [
-        "./skills/software-factory/"
-      ]
     }
   }
 }
