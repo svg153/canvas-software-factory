@@ -9,10 +9,47 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 export const ACTION_TOKEN_PLACEHOLDER = "__SF_ACTION_TOKEN__";
 export const ACTION_TOKEN_HEADER = "x-sf-action-token";
 
+export const MAX_BODY_BYTES = 64 * 1024;
+
+class HttpError extends Error {
+  constructor(status, code) {
+    super(code);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function readJsonBody(req) {
-  let data = "";
-  for await (const chunk of req) data += chunk;
-  return data ? JSON.parse(data) : {};
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, "sf_body_demasiado_grande");
+    chunks.push(chunk);
+  }
+  const data = Buffer.concat(chunks).toString("utf8");
+  try {
+    return data ? JSON.parse(data) : {};
+  } catch {
+    throw new HttpError(400, "sf_json_invalido");
+  }
+}
+
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors *",
+};
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost"]);
+
+function isLoopbackOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function createFactoryServer({
@@ -28,8 +65,19 @@ export function createFactoryServer({
     if (typeof header !== "string" || header.length !== actionToken.length) return false;
     return timingSafeEqual(Buffer.from(header, "utf8"), Buffer.from(actionToken, "utf8"));
   };
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
+    const writeHead = res.writeHead.bind(res);
+    res.writeHead = (status, ...rest) => {
+      for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
+      return writeHead(status, ...rest);
+    };
     try {
+      const { port } = server.address();
+      if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(String(req.headers.host || "").toLowerCase())) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "sf_host_no_permitido" }));
+        return;
+      }
       const requestUrl = new URL(req.url, "http://127.0.0.1");
       const repoDir = requestUrl.searchParams.get("repo") || defaultRepo();
       const path = requestUrl.pathname;
@@ -65,6 +113,13 @@ export function createFactoryServer({
         return;
       }
       if (req.method === "POST" && path === "/action") {
+        const origin = req.headers.origin;
+        const fetchSite = req.headers["sec-fetch-site"];
+        if ((origin !== undefined && !isLoopbackOrigin(origin)) || fetchSite === "cross-site") {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "sf_origen_no_permitido" }));
+          return;
+        }
         if (!tokenOk(req.headers[ACTION_TOKEN_HEADER])) {
           res.writeHead(403, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "sf_csrf_token_invalido" }));
@@ -79,8 +134,16 @@ export function createFactoryServer({
       res.writeHead(404);
       res.end();
     } catch (error) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }));
+      if (!(error instanceof HttpError)) console.error("[software-factory] request failed:", error);
+      const status = error instanceof HttpError ? error.status : 400;
+      const code = error instanceof HttpError ? error.code : "sf_solicitud_fallida";
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: code }));
     }
   });
+  return server;
 }
