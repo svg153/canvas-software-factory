@@ -9,8 +9,8 @@ import { promisify } from "node:util";
 
 import { createFactoryServer } from "../lib/http.mjs";
 import { createIssuesFromDraft, projectItemAddArgs } from "../lib/gh.mjs";
-import { initRunnerArgs } from "../lib/actions.mjs";
-import { unclaimedIssues, loadState } from "../lib/state.mjs";
+import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
+import { unclaimedIssues, loadState, saveState } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
 import { buildCanvasManifest } from "../../../../tools/make-canvas-manifest.mjs";
@@ -20,6 +20,24 @@ const execAsync = promisify(exec);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../");
 const extensionDir = join(repoRoot, "extensions", "software-factory");
 const runnerPath = join(extensionDir, "runner", "sf.mjs");
+
+// El token de acción se obtiene como la UI: leyendo el HTML servido por el propio servidor.
+async function actionTokenFrom(server) {
+  const html = await (await fetch(`http://127.0.0.1:${server.address().port}/`)).text();
+  const token = html.match(/name="sf-action-token" content="([0-9a-f]+)"/)?.[1];
+  assert.ok(token, "el HTML debe exponer el token de acción");
+  return token;
+}
+
+function listen(server) {
+  return new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+}
+
+function closeServer(server) {
+  return new Promise((resolveClose, reject) => {
+    server.close((error) => (error ? reject(error) : resolveClose()));
+  });
+}
 
 test("builds the supported gh project item-add arguments", () => {
   assert.deepEqual(
@@ -79,7 +97,10 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
 
   const actionResponse = await fetch(`${baseUrl}${routeWithRepo("/action", selectedRepo)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-sf-action-token": await actionTokenFrom(server),
+    },
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
   const action = await actionResponse.json();
@@ -123,7 +144,10 @@ test("passes the form Project owner through the action route to runner arguments
   }));
   const response = await fetch(`http://127.0.0.1:${server.address().port}/action`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-sf-action-token": await actionTokenFrom(server),
+    },
     body: JSON.stringify({ actionName: "init", input: formPayload }),
   });
   const result = await response.json();
@@ -326,4 +350,161 @@ test("canvas.json is not distributed; the installer generates it from plugin met
   assert.match(installer, /extensions\\software-factory/);
   assert.match(installer, /skills\\software-factory/);
   assert.match(installer, /tools\\make-canvas-manifest\.mjs/);
+});
+
+test("POST /action rejects missing or wrong CSRF token and accepts the HTML-exposed one", async (t) => {
+  const applied = [];
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\repo",
+    readState: async () => null,
+    ensureWatch() {},
+    subscribe() {},
+    applyAction: async (repo, actionName) => {
+      applied.push(actionName);
+      return { status: `ok ${actionName}` };
+    },
+  });
+  await listen(server);
+  t.after(() => closeServer(server));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const token = await actionTokenFrom(server);
+  assert.match(token, /^[0-9a-f]{48}$/);
+
+  const post = (headers) => fetch(`${baseUrl}/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ actionName: "pause", input: {} }),
+  });
+
+  let response = await post({});
+  assert.equal(response.status, 403);
+  assert.match((await response.json()).error, /sf_csrf_token_invalido/);
+
+  response = await post({ "x-sf-action-token": "f".repeat(48) });
+  assert.equal(response.status, 403);
+
+  response = await post({ "x-sf-action-token": token });
+  assert.equal(response.status, 200);
+  assert.deepEqual(applied, ["pause"]);
+
+  // La UI debe enviar la cabecera con el mismo nombre que valida el servidor.
+  const appSource = await readFile(join(extensionDir, "app.mjs"), "utf8");
+  assert.match(appSource, /x-sf-action-token/);
+  assert.match(appSource, /sf-action-token/);
+
+  // Cada instancia genera un token distinto.
+  const server2 = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\repo",
+    readState: async () => null,
+    ensureWatch() {},
+    subscribe() {},
+    applyAction: async () => ({ status: "ok" }),
+  });
+  await listen(server2);
+  t.after(() => closeServer(server2));
+  assert.notEqual(await actionTokenFrom(server2), token);
+});
+
+test("startGuardError only blocks finished factories; canvas play uses it", () => {
+  assert.match(startGuardError({ status: "done" }), /ya terminó/);
+  assert.equal(startGuardError({ status: "running" }), null);
+  assert.equal(startGuardError({ status: "paused" }), null);
+  assert.equal(startGuardError(null), null);
+});
+
+test("full CLI cycle ends done at max_rounds without extra-round tasks", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-cycle-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  let out = JSON.parse((await run("next", repo)).stdout);
+  let iterations = 0;
+  while (out.status === "running" && iterations++ < 40) {
+    for (const task of out.tasks || []) await run("complete", repo, task.id);
+    out = JSON.parse((await run("next", repo)).stdout);
+  }
+  assert.equal(out.status, "done", `la fábrica debía terminar, quedó ${out.status}`);
+
+  const state = await loadState(repo);
+  assert.equal(state.round, 1, "round no debe superar max_rounds al terminar");
+  assert.equal(state.status, "done");
+  assert.ok(state.tasks.every((task) => task.round <= state.max_rounds));
+  assert.equal(state.tasks.filter((task) => task.phase === "review").length, 1);
+
+  // next sobre fábrica done: hint hacia init y cero tareas nuevas.
+  const before = state.tasks.length;
+  const after = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(after.status, "done");
+  assert.deepEqual(after.tasks, []);
+  assert.match(after.hint, /init/);
+  assert.equal((await loadState(repo)).tasks.length, before, "next no debe emitir tareas tras done");
+});
+
+test("start right after completing a phase's last task does not re-emit it", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-restart-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "2");
+  await run("start", repo);
+  const state1 = await loadState(repo);
+  const discover = state1.tasks.filter((task) => task.phase === "discover");
+  assert.equal(discover.length, 1);
+  await run("complete", repo, discover[0].id);
+
+  await run("start", repo); // reanudar justo tras cerrar la última tarea de la fase
+  const state2 = await loadState(repo);
+  assert.equal(state2.status, "running");
+  assert.equal(
+    state2.tasks.filter((task) => task.phase === "discover" && task.round === 1).length,
+    1,
+    "start no debe duplicar tareas de una fase ya completada",
+  );
+
+  // next debe cerrar la fase y emitir la siguiente (plan), sin duplicar discover.
+  const next = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(next.phase, "plan");
+  assert.equal(next.tasks.length, 1);
+  assert.equal((await loadState(repo)).tasks.filter((task) => task.phase === "discover").length, 1);
+});
+
+test("start refuses a finished factory and keeps status done", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-done-start-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+
+  const state = await (async () => {
+    await execFileAsync(process.execPath, [runnerPath, "init", repo, "--repo", "org/repo"]);
+    const loaded = await loadState(repo);
+    loaded.status = "done";
+    return saveState(repo, loaded);
+  })();
+  assert.equal(state.status, "done");
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [runnerPath, "start", repo]),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /ya terminó/);
+      return true;
+    },
+  );
+  const after = await loadState(repo);
+  assert.equal(after.status, "done", "start rechazado no debe reabrir la fábrica");
+  assert.equal(after.tasks.length, 0, "start rechazado no debe emitir tareas");
+});
+
+test("extension play guards a done factory via the shared startGuardError", async () => {
+  const extSource = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  assert.match(extSource, /startGuardError/);
+  assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
 });

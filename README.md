@@ -62,6 +62,9 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 #    ⏸ Pause anytime. State lives in <repo>/.software-factory/.
 ```
 
+A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refuse to
+reopen it and `next` emits no further tasks. Run `init` again for a new execution.
+
 ## Privacy & security
 
 - The plugin stores state **only** inside `<repo>/.software-factory/` (JSON + markdown).
@@ -74,16 +77,22 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
   repo, `<repo>/.software-factory/` is *not* automatically ignored there — add it to
   that repo's `.gitignore` (or delete the folder) before committing.
 - The canvas HTTP server binds to `127.0.0.1` on a random port (localhost-only UI).
+  `POST /action` additionally requires a per-instance CSRF token: the server generates
+  a random token at startup, embeds it in the served HTML (`meta[name="sf-action-token"]`)
+  and rejects any request without the matching `x-sf-action-token` header (403). A
+  foreign website can send a simple POST but cannot read the token or the response.
 - Project item-add failures are recorded in `state.notes`; issue creation can continue.
 - When a Project owner is not provided, the runner uses the owner from `--repo`.
 
 ## Validate
 
 From `extensions/software-factory/`, run `npm test` to execute the built-in Node.js
-regression tests. The GitHub Actions workflow also checks the JavaScript syntax,
-validates the plugin, package and `canvas-meta.json` manifests, verifies the
-extension tree contains no `canvas.json`, and generates the install-target
-`canvas.json` with `tools/make-canvas-manifest.mjs` on pushes and pull requests.
+regression tests. Install/maintainability tests (temp `COPILOT_HOME` only, never the
+real install) run with `pwsh -NoProfile -File tests/install-tests.ps1` from the repo
+root. The GitHub Actions workflow also checks the JavaScript syntax, validates the
+plugin, package and `canvas-meta.json` manifests, verifies the extension tree contains
+no `canvas.json`, generates the install-target `canvas.json` with
+`tools/make-canvas-manifest.mjs`, and runs the install suite on `windows-latest`.
 
 ## Repo layout notes
 

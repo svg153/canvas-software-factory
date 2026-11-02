@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
 import { createFactoryServer } from "./runner/lib/http.mjs";
-import { initRunnerArgs } from "./runner/lib/actions.mjs";
+import { initRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -68,6 +68,8 @@ async function applyAction(repoDir, actionName, input = {}) {
     return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, runner: RUNNER };
   }
   if (actionName === "play") {
+    const guard = startGuardError(await readState(repoDir));
+    if (guard) throw new CanvasError("sf_done", guard);
     const state = await writeStatus(repoDir, "running");
     if (session) await session.send({ prompt: factoryPrompt(repoDir, state) });
     return { status: "Fábrica lanzada — el agente recibió el prompt de arranque", state };

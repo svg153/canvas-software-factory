@@ -29,3 +29,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sf-ext"
           node tools/make-canvas-manifest.mjs . "$RUNNER_TEMP/sf-ext"
           node --input-type=module -e "import fs from 'node:fs'; const m = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/sf-ext/canvas.json', 'utf8')); if (m.id !== 'software-factory' || m.main !== 'extension.mjs') process.exit(1)"
+
+  install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run install/maintainability test suite (temp COPILOT_HOME only)
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/install-tests.ps1

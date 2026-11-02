@@ -1,3 +1,11 @@
+// Una fábrica terminada (status=done) no debe relanzarse en silencio: exige init.
+export function startGuardError(state) {
+  if (state?.status === "done") {
+    return "La fábrica ya terminó (status=done). Ejecuta init <repo> --repo owner/repo para una nueva ejecución.";
+  }
+  return null;
+}
+
 export function initRunnerArgs(repoDir, input = {}) {
   const args = ["init", repoDir];
   if (input.repo) args.push("--repo", input.repo);

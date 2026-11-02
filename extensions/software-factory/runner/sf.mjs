@@ -11,6 +11,7 @@ import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
 } from "./lib/prompts.mjs";
 import { createIssuesFromDraft } from "./lib/gh.mjs";
+import { startGuardError } from "./lib/actions.mjs";
 
 const [, , cmd, repoArg = ".", ...rest] = process.argv;
 const repoPath = resolve(repoArg);
@@ -80,7 +81,10 @@ async function cmdStatus() {
 async function cmdNext() {
   const state = need(await loadState(repoPath));
   if (state.status !== "running") {
-    console.log(JSON.stringify({ status: state.status, hint: "Ejecuta: node sf.mjs start <repo>" }, null, 2));
+    const hint = state.status === "done"
+      ? "Fábrica terminada. Ejecuta init <repo> --repo owner/repo para una nueva ejecución."
+      : "Ejecuta: node sf.mjs start <repo>";
+    console.log(JSON.stringify({ status: state.status, round: state.round, phase: state.phase, tasks: [], hint }, null, 2));
     return;
   }
   // Si la fase no tiene tareas: si ya tuvo y están done, avanza; si no tuvo, se generan.
@@ -89,7 +93,8 @@ async function cmdNext() {
     if (hasPhaseTasks()) {
       await advance(state);
     }
-    if (openTasks(state).length === 0 && !hasPhaseTasks()) {
+    // advance puede terminar la fábrica (status=done): entonces no se emite nada más.
+    if (state.status === "running" && openTasks(state).length === 0 && !hasPhaseTasks()) {
       const n = await emitTasks(state);
       if (n === 0) await advance(state); // fases mecánicas o sin contenido (issues, implement sin issues)
     }
@@ -110,6 +115,7 @@ async function cmdNext() {
 }
 
 async function advance(state) {
+  if (state.status === "done") return; // fábrica terminada: no avanza ni crea rondas extra
   const p = paths(state.repo_path);
   if (state.phase === "issues") {
     const created = await createIssuesFromDraft(state, {
@@ -119,14 +125,15 @@ async function advance(state) {
     await logEvent(state.repo_path, `issues phase: ${created.length} issues`);
   }
   if (state.phase === "review") {
-    state.round += 1;
-    if (state.round > state.max_rounds) {
+    if (state.round >= state.max_rounds) {
+      // round se queda en max_rounds: done no debe dejar una ronda extra visible.
       state.status = "done";
       state.phase = "review";
       await logEvent(state.repo_path, `factory done tras ${state.max_rounds} rounds`);
       await saveState(state.repo_path, state);
       return;
     }
+    state.round += 1;
     state.phase = "discover";
     await logEvent(state.repo_path, `round ${state.round} iniciado`);
     await saveState(state.repo_path, state);
@@ -153,8 +160,14 @@ async function cmdComplete() {
 
 async function cmdSetStatus(next) {
   const state = need(await loadState(repoPath));
+  if (next === "running") {
+    const guard = startGuardError(state);
+    if (guard) { console.error(guard); process.exit(1); }
+  }
   state.status = next;
-  if (next === "running" && !openTasks(state).length) await emitTasks(state);
+  // No re-emitir si la fase actual ya tuvo tareas (aunque estén todas done): next las cierra.
+  const phaseHasTasks = state.tasks.some((t) => t.phase === state.phase && t.round === state.round);
+  if (next === "running" && !openTasks(state).length && !phaseHasTasks) await emitTasks(state);
   await logEvent(repoPath, `status -> ${next}`);
   await saveState(repoPath, state);
   console.log(JSON.stringify({ ok: true, status: state.status, phase: state.phase }, null, 2));

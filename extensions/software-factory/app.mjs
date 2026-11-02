@@ -9,10 +9,13 @@ function log(message) {
   element.scrollTop = element.scrollHeight;
 }
 
+// Token CSRF expuesto por el servidor en el HTML (meta sf-action-token).
+const actionToken = document.querySelector('meta[name="sf-action-token"]')?.content || "";
+
 async function action(actionName, input = {}) {
   const response = await fetch(routeWithRepo("/action", repo), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-sf-action-token": actionToken },
     body: JSON.stringify({ actionName, input }),
   });
   const result = await response.json();
