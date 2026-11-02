@@ -63,7 +63,39 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 ```
 
 A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refuse to
-reopen it and `next` emits no further tasks. Run `init` again for a new execution.
+reopen it and `next` emits no further tasks. To run a new execution, re-`init` the
+repo with `--force` (see contract below).
+
+## Runner contract (v2 semantics)
+
+- **`init` never overwrites silently.** If `<repo>/.software-factory/state.json`
+  exists (even corrupt), `init` refuses and exits 1 with the current progress.
+  `--force` is the explicit, destructive reset. The canvas follows the same path,
+  so a Play on an existing factory cannot wipe its progress by accident.
+- **Simulation is safe.** `--dry` and `--dry-run` are equivalent on every command.
+  Dry runs never call `gh` and never write to `state.issues` — fictitious issues
+  appear only in the command output (marked `dry: true`, numbered from 901 upward
+  without colliding with real ones). A later real run therefore still creates the
+  same draft titles instead of skipping them.
+- **`complete <taskId>` requires the report.** Closing a task as `done` demands the
+  result file written by the agent (`results/<id>.md`); otherwise it exits 1.
+  `--force` closes without the report as the explicit alternative; `--fail` marks
+  the task failed.
+- **Failed tasks don't loop forever.** A `--fail` task is never re-claimed, but the
+  rest of the phase keeps working and the phase advances normally. The failure
+  surfaces in `next` output (`failed: [...]`), `status` (`tasks_failed`, `notes`),
+  `state.notes` and `events.log` — never silently hidden.
+- **`gh` is judged by its exit code only** (stderr notices like "could not check
+  for updates" no longer abort a successful create), and the create output is
+  validated as an issue URL *before* anything is persisted. The repo slug
+  `owner/name` is validated before touching the CLI, so a misconfigured state can
+  never create issues against the runner's cwd.
+- **`state.json` is written atomically** (unique temp file + rename): a crash mid
+  write leaves the previous state intact. It does not protect against concurrent
+  lost updates; drive one factory per repo from one process at a time.
+- Testing hook: `SF_FAKE_GH=<script.mjs>` makes the runner invoke a Node script
+  instead of the real `gh` CLI (used by the regression suite; no real GitHub
+  access happens when it is set).
 
 ## Privacy & security
 

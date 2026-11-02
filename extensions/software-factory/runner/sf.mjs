@@ -2,10 +2,11 @@
 // sf.mjs — Software Factory runner CLI.
 // Uso: node sf.mjs <command> <repoPath> [args...]
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
   loadState, saveState, defaultState, logEvent, paths,
-  newTask, writeWorkOrder, openTasks, unclaimedIssues, PHASES,
+  newTask, writeWorkOrder, openTasks, failedTasks, unclaimedIssues, hasResult, PHASES,
 } from "./lib/state.mjs";
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
@@ -19,6 +20,8 @@ const flags = (name) => {
   const i = rest.findIndex((a) => a === `--${name}`);
   return i >= 0 ? (rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : true) : undefined;
 };
+// --dry y --dry-run son equivalentes: antes "next --dry-run" se ignoraba y creaba issues reales.
+const isDryRun = () => flags("dry") !== undefined || flags("dry-run") !== undefined;
 
 function need(state) {
   if (!state) {
@@ -56,6 +59,21 @@ async function emitTasks(state) {
 }
 
 async function cmdInit() {
+  // Re-init sin --force destruiría el progreso (tasks, issues, fase actual).
+  // Incluye state ilegible: existe decision de datos que no debe pisarse en silencio
+  // (el canvas también pasa por aquí, sin --force implícito).
+  const stateFile = paths(repoPath).state;
+  if (existsSync(stateFile) && !flags("force")) {
+    const existing = await loadState(repoPath);
+    const detail = existing
+      ? `fase ${existing.phase}, round ${existing.round}/${existing.max_rounds}, ${existing.tasks?.length ?? "?"} tasks, ${existing.issues?.length ?? "?"} issues`
+      : "state.json ilegible (¿JSON corrupto?)";
+    console.error(
+      `Ya existe estado en ${paths(repoPath).root}: ${detail}. ` +
+      `Usa init <repo> ... --force para reiniciar de verdad (perderás el progreso).`,
+    );
+    process.exit(1);
+  }
   const repo = flags("repo") || "";
   const project = flags("project") || "";
   const projectOwner = flags("project-owner") || "";
@@ -72,7 +90,9 @@ async function cmdStatus() {
     status: state.status, round: state.round, max_rounds: state.max_rounds,
     phase: state.phase, phase_index: `${PHASES.indexOf(state.phase) + 1}/${PHASES.length}`,
     tasks_open: openTasks(state).length, tasks_done: state.tasks.filter((t) => t.status === "done").length,
+    tasks_failed: state.tasks.filter((t) => t.status === "failed").length,
     issues_created: state.issues.length, updated_at: state.updated_at,
+    notes: (state.notes || "").trim(),
   };
   console.log(JSON.stringify(summary, null, 2));
 }
@@ -91,6 +111,13 @@ async function cmdNext() {
   const hasPhaseTasks = () => state.tasks.some((t) => t.phase === state.phase && t.round === state.round);
   if (openTasks(state).length === 0) {
     if (hasPhaseTasks()) {
+      // Tareas fallidas no se re-claman, pero el avance no puede ser silencioso.
+      const failed = failedTasks(state);
+      if (failed.length) {
+        state.notes = (state.notes || "") +
+          `\nround ${state.round} ${state.phase}: ${failed.length} tarea(s) fallida(s): ${failed.map((f) => f.id).join(", ")}`;
+        await logEvent(repoPath, `fase ${state.phase} (round ${state.round}) avanza con fallidas: ${failed.map((f) => f.id).join(", ")}`);
+      }
       await advance(state);
     }
     // advance puede terminar la fábrica (status=done): entonces no se emite nada más.
@@ -100,8 +127,9 @@ async function cmdNext() {
     }
   }
   const open = openTasks(state);
+  const failedNow = failedTasks(state).map((f) => ({ id: f.id, title: f.title }));
   if (open.length === 0) {
-    console.log(JSON.stringify({ status: state.status, phase: state.phase, tasks: [] }, null, 2));
+    console.log(JSON.stringify({ status: state.status, phase: state.phase, tasks: [], failed: failedNow }, null, 2));
     return;
   }
   const out = [];
@@ -111,7 +139,7 @@ async function cmdNext() {
     out.push({ id: t.id, phase: t.phase, title: t.title, status: t.status, prompt });
   }
   await saveState(repoPath, state);
-  console.log(JSON.stringify({ status: state.status, round: state.round, phase: state.phase, tasks: out }, null, 2));
+  console.log(JSON.stringify({ status: state.status, round: state.round, phase: state.phase, tasks: out, failed: failedNow }, null, 2));
 }
 
 async function advance(state) {
@@ -119,10 +147,10 @@ async function advance(state) {
   const p = paths(state.repo_path);
   if (state.phase === "issues") {
     const created = await createIssuesFromDraft(state, {
-      dryRun: Boolean(flags("dry")),
+      dryRun: isDryRun(),
       persistState: () => saveState(state.repo_path, state),
     });
-    await logEvent(state.repo_path, `issues phase: ${created.length} issues`);
+    await logEvent(state.repo_path, `issues phase: ${created.length} issues${isDryRun() ? " (dry-run)" : ""}`);
   }
   if (state.phase === "review") {
     if (state.round >= state.max_rounds) {
@@ -150,7 +178,17 @@ async function cmdComplete() {
   const state = need(await loadState(repoPath));
   const t = state.tasks.find((x) => x.id === taskId);
   if (!t) { console.error(`task ${taskId} no existe`); process.exit(1); }
-  t.status = extra.includes("--fail") ? "failed" : "done";
+  const fail = extra.includes("--fail");
+  // Contract de la skill y de los work orders: cerrar "done" exige el informe
+  // escrito en result_file. --force es la alternativa explícita y documentada.
+  if (!fail && !extra.includes("--force") && !(await hasResult(t))) {
+    console.error(
+      `Sin informe en ${t.result_file}. Escribe el resultado de la tarea antes de cerrarla ` +
+      `(o usa complete <repo> <taskId> --force como alternativa explícita).`,
+    );
+    process.exit(1);
+  }
+  t.status = fail ? "failed" : "done";
   t.completed_at = new Date().toISOString();
   await logEvent(repoPath, `task ${taskId} -> ${t.status}`);
   await saveState(repoPath, state);
@@ -176,7 +214,7 @@ async function cmdSetStatus(next) {
 async function cmdIssues() {
   const state = need(await loadState(repoPath));
   const created = await createIssuesFromDraft(state, {
-    dryRun: Boolean(flags("dry-run")),
+    dryRun: isDryRun(),
     persistState: () => saveState(state.repo_path, state),
   });
   await logEvent(repoPath, `issues manual: ${created.length}`);
@@ -197,11 +235,16 @@ async function main() {
     default:
       console.log(`sf.mjs — Software Factory runner
 Comandos:
-  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3]
+  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--force]
+      (sin --force no toca un estado existente; reiniciar es decision explicita)
   start|pause|status|next <repo>
-  complete <repo> <taskId> [--fail]
-  issues <repo> [--dry-run]   (crea issues del draft + añade al Project)
-  advance <repo>              (fuerza avance de fase)`);
+  complete <repo> <taskId> [--fail|--force]
+      (done exige informe en result_file; --force es la alternativa explicita)
+  issues <repo> [--dry|--dry-run]  (crea issues del draft + añade al Project; la simulacion
+      no escribe en state.issues ni llama a gh)
+  advance <repo> [--dry|--dry-run] (fuerza avance de fase)
+Simulacion: --dry y --dry-run son equivalentes en cualquier comando.
+Tareas --fail: no se re-claman; el fallo queda en status/notes/events.log.`);
   }
 }
 

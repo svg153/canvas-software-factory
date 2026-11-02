@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { exec, execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -8,9 +9,9 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { createFactoryServer } from "../lib/http.mjs";
-import { createIssuesFromDraft, projectItemAddArgs } from "../lib/gh.mjs";
+import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
 import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
-import { unclaimedIssues, loadState, saveState } from "../lib/state.mjs";
+import { unclaimedIssues, failedTasks, loadState, saveState } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
 import { buildCanvasManifest } from "../../../../tools/make-canvas-manifest.mjs";
@@ -320,6 +321,9 @@ test("the complete command copied from a work order runs end to end", async (t) 
   const command = promptText.match(/Reporta con: (.+)/)?.[1];
   assert.ok(command, "work order must contain a runnable report command");
 
+  // Contract: done exige informe en result_file; lo escribe primero el "agente".
+  await writeFile(task.result_file, "# Informe\nTarea completada.\n");
+
   // Ejecutar la cadena tal cual la vería un usuario: vía shell, para validar el quoting.
   await execAsync(command);
 
@@ -426,7 +430,7 @@ test("full CLI cycle ends done at max_rounds without extra-round tasks", async (
   let out = JSON.parse((await run("next", repo)).stdout);
   let iterations = 0;
   while (out.status === "running" && iterations++ < 40) {
-    for (const task of out.tasks || []) await run("complete", repo, task.id);
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
     out = JSON.parse((await run("next", repo)).stdout);
   }
   assert.equal(out.status, "done", `la fábrica debía terminar, quedó ${out.status}`);
@@ -458,7 +462,7 @@ test("start right after completing a phase's last task does not re-emit it", asy
   const state1 = await loadState(repo);
   const discover = state1.tasks.filter((task) => task.phase === "discover");
   assert.equal(discover.length, 1);
-  await run("complete", repo, discover[0].id);
+  await run("complete", repo, discover[0].id, "--force");
 
   await run("start", repo); // reanudar justo tras cerrar la última tarea de la fase
   const state2 = await loadState(repo);
@@ -509,23 +513,61 @@ test("extension play guards a done factory via the shared startGuardError", asyn
   assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
 });
 
-test("multi-round CLI dry-run keeps issue numbers unique and claims new round-2 issues", async (t) => {
+// gh falso para pruebas e2e (SF_FAKE_GH): registra llamadas, crea issues con
+// número incremental y tolera ruido en stderr con exit 0 (como gh real).
+async function writeFakeGh(dir) {
+  const fakePath = join(dir, "fake-gh.mjs");
+  await writeFile(fakePath, [
+    'import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";',
+    "const args = process.argv.slice(2);",
+    "if (process.env.SF_FAKE_GH_LOG) appendFileSync(process.env.SF_FAKE_GH_LOG, JSON.stringify(args) + String.fromCharCode(10));",
+    'if (args[0] === "issue" && args[1] === "create") {',
+    '  if (process.env.SF_FAKE_GH_MODE === "fail") { console.error("error: gh auth could not complete"); process.exit(1); }',
+    "  const c = process.env.SF_FAKE_GH_COUNTER;",
+    '  let n = c && existsSync(c) ? Number(readFileSync(c, "utf8")) : 0;',
+    "  n += 1;",
+    '  if (c) writeFileSync(c, String(n));',
+    '  console.error("warning: could not check for updates (harmless notice)");',
+    '  console.log(process.env.SF_FAKE_GH_MODE === "garbage" ? "not a url at all" : "https://github.com/org/repo/issues/" + n);',
+    "  process.exit(0);",
+    "}",
+    'console.log("{}");',
+  ].join("\n"));
+  return fakePath;
+}
+
+function ghEnv(fakePath, tempDir) {
+  return {
+    ...process.env,
+    SF_FAKE_GH: fakePath,
+    SF_FAKE_GH_LOG: join(tempDir, "gh-calls.log"),
+    SF_FAKE_GH_COUNTER: join(tempDir, "gh-counter"),
+  };
+}
+
+async function ghCalls(logPath) {
+  if (!existsSync(logPath)) return [];
+  return (await readFile(logPath, "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+
+test("multi-round CLI with fake gh keeps issue numbers unique and claims only new round-2 issues", async (t) => {
   const tempDir = await mkdtemp(join(tmpdir(), "sf-multi-round-"));
   t.after(() => rm(tempDir, { recursive: true, force: true }));
   const repo = join(tempDir, "repo");
   await mkdir(repo);
-  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+  const fake = await writeFakeGh(tempDir);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
 
   await run("init", repo, "--repo", "org/repo", "--rounds", "2");
   await run("start", repo);
   const draftFile = join(repo, ".software-factory", "issues-draft.json");
   await writeFile(draftFile, JSON.stringify({ issues: [{ title: "Alpha" }, { title: "Beta" }] }));
 
-  let out = JSON.parse((await run("next", repo, "--dry")).stdout);
+  let out = JSON.parse((await run("next", repo)).stdout);
   let iterations = 0;
   let injectedRound2 = false;
   while (out.status === "running" && iterations++ < 60) {
-    for (const task of out.tasks || []) await run("complete", repo, task.id);
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
     if (!injectedRound2 && out.phase === "discover" && out.round === 2) {
       // Issue nueva en ronda 2: no debe reutilizar los números de la ronda 1.
       await writeFile(draftFile, JSON.stringify({
@@ -533,26 +575,253 @@ test("multi-round CLI dry-run keeps issue numbers unique and claims new round-2 
       }));
       injectedRound2 = true;
     }
-    out = JSON.parse((await run("next", repo, "--dry")).stdout);
+    out = JSON.parse((await run("next", repo)).stdout);
   }
   assert.equal(out.status, "done", `la fábrica debía terminar, quedó ${out.status}`);
   assert.ok(injectedRound2, "el ciclo debe haber alcanzado la ronda 2");
 
   const state = await loadState(repo);
   const numbers = state.issues.map((i) => i.number);
-  assert.deepEqual(numbers, [901, 902, 903], "los números dry-run deben ser únicos entre rondas");
+  assert.deepEqual(numbers, [1, 2, 3], "gh falso creó 3 issues reales, únicos entre rondas");
   assert.equal(new Set(numbers).size, numbers.length);
+
+  const creates = (await ghCalls(join(tempDir, "gh-calls.log")))
+    .filter((a) => a[0] === "issue" && a[1] === "create");
+  assert.equal(creates.length, 3, "solo Gamma se creó en ronda 2; Alpha/Beta se omitieron por título");
 
   const r1 = state.tasks.filter((task) => task.phase === "implement" && task.round === 1);
   const r2 = state.tasks.filter((task) => task.phase === "implement" && task.round === 2);
   assert.equal(r1.length, 2, "ronda 1: Alpha y Beta");
   assert.equal(r2.length, 1, "ronda 2: solo Gamma, sin repetir Alpha/Beta");
   assert.match(r2[0].title, /Gamma/);
-  assert.equal(r2[0].issue?.number ?? r2[0].issue?.number, 903, "Gamma no debe colisionar con Alpha (901)");
+  assert.equal(r2[0].issue.number, 3, "Gamma no debe colisionar con Alpha (1)");
 
   const gammaOrder = await readFile(r2[0].prompt_file, "utf8");
-  assert.match(gammaOrder, /# Implementar issue #903 — Gamma/);
+  assert.match(gammaOrder, /# Implementar issue #3 — Gamma/);
   assert.doesNotMatch(gammaOrder, /Alpha|Beta/, "el work order de Gamma no debe repetir otras issues");
+});
+
+test("dry-run never calls gh nor pollutes state; the later real run still creates the same issues", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-dry-purity-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const fake = await writeFakeGh(tempDir);
+  const logPath = join(tempDir, "gh-calls.log");
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  const draftFile = join(repo, ".software-factory", "issues-draft.json");
+  await writeFile(draftFile, JSON.stringify({ issues: [{ title: "Alpha" }, { title: "Beta" }] }));
+
+  // Ciclo completo en simulación con la forma larga --dry-run (antes "next" la ignoraba).
+  let out = JSON.parse((await run("next", repo, "--dry-run")).stdout);
+  let iterations = 0;
+  while (out.status === "running" && iterations++ < 40) {
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+    out = JSON.parse((await run("next", repo, "--dry-run")).stdout);
+  }
+  assert.equal(out.status, "done");
+  assert.deepEqual(await ghCalls(logPath), [], "dry-run no debe invocar gh nunca");
+  const dryState = await loadState(repo);
+  assert.deepEqual(dryState.issues, [], "dry-run no contamina state.issues");
+  const events = await readFile(join(repo, ".software-factory", "events.log"), "utf8");
+  assert.match(events, /issues phase: 2 issues \(dry-run\)/);
+
+  // Ejecución real posterior: los títulos del dry deben crearse igual (no omitirse por título).
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1", "--force");
+  await run("start", repo);
+  const issuesOut = JSON.parse((await run("issues", repo)).stdout);
+  assert.equal(issuesOut.created, 2, "la ejecución real crea las 2 issues pese al dry previo");
+  assert.deepEqual(issuesOut.urls.map((u) => u.number), [1, 2],
+    "los números reales los pone gh; los ficticios del dry (901+) nunca se persistieron");
+  const realState = await loadState(repo);
+  assert.deepEqual(realState.issues.map((i) => i.title).sort(), ["Alpha", "Beta"]);
+});
+
+test("init refuses to overwrite existing or corrupt state without --force", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-init-guard-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo");
+  await run("start", repo);
+  const before = await loadState(repo);
+  assert.equal(before.tasks.length, 1);
+
+  await assert.rejects(run("init", repo, "--repo", "other/repo"), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /Ya existe estado/);
+    assert.match(error.stderr, /--force/);
+    return true;
+  });
+  const kept = await loadState(repo);
+  assert.equal(kept.repo, "org/repo", "init sin --force no pisa el estado existente");
+  assert.equal(kept.tasks.length, 1);
+
+  const stateFile = join(repo, ".software-factory", "state.json");
+  await writeFile(stateFile, "no-es-json{{{");
+  await assert.rejects(run("init", repo, "--repo", "org/repo"), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /ilegible/);
+    return true;
+  });
+  assert.equal(await readFile(stateFile, "utf8"), "no-es-json{{{", "el estado corrupto no se pisa en silencio");
+
+  await run("init", repo, "--repo", "org/repo", "--force");
+  const reset = await loadState(repo);
+  assert.equal(reset.tasks.length, 0, "--force reinicia de verdad, de forma explícita");
+});
+
+test("complete requires the report file; --force is the explicit documented alternative", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-report-guard-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo");
+  await run("start", repo);
+  const state = await loadState(repo);
+  const discover = state.tasks.find((task) => task.phase === "discover");
+
+  await assert.rejects(run("complete", repo, discover.id), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /Sin informe en/);
+    assert.match(error.stderr, /--force/);
+    return true;
+  });
+  assert.equal((await loadState(repo)).tasks.find((task) => task.id === discover.id).status, "awaiting_agent");
+
+  // Con informe escrito, el cierre contractual funciona sin --force.
+  await writeFile(discover.result_file, "# Informe\nhallazgos\n");
+  await run("complete", repo, discover.id);
+  assert.equal((await loadState(repo)).tasks.find((task) => task.id === discover.id).status, "done");
+
+  // --force cierra sin informe (alternativa explícita).
+  await run("next", repo);
+  const plan = (await loadState(repo)).tasks.find((task) => task.phase === "plan");
+  await run("complete", repo, plan.id, "--force");
+  assert.equal((await loadState(repo)).tasks.find((task) => task.id === plan.id).status, "done");
+});
+
+test("failed task is not re-claimed, other phase tasks proceed, failure stays visible", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-failed-task-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const fake = await writeFakeGh(tempDir);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(fake, tempDir) });
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Alpha" }, { title: "Beta" }] }));
+
+  let out = JSON.parse((await run("next", repo)).stdout);
+  let iterations = 0;
+  while (!(out.phase === "implement" && out.tasks.length === 2) && iterations++ < 30) {
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+    out = JSON.parse((await run("next", repo)).stdout);
+  }
+  const [first, second] = out.tasks;
+
+  await run("complete", repo, first.id, "--fail");
+  const afterFail = JSON.parse((await run("next", repo)).stdout);
+  assert.deepEqual(afterFail.tasks.map((task) => task.id), [second.id],
+    "la tarea fallida no se re-clama; la pendiente de la fase sí sigue disponible");
+  assert.deepEqual(afterFail.failed.map((task) => task.id), [first.id], "el fallo se reporta, no se oculta");
+
+  await run("complete", repo, second.id, "--force");
+  const advanced = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(advanced.phase, "review", "la fase avanza sin quedar bloqueada por la fallida");
+  assert.ok(!advanced.tasks.some((task) => task.id === first.id), "review no re-emite la fallida");
+
+  const state = await loadState(repo);
+  assert.match(state.notes, /tarea\(s\) fallida\(s\)/);
+  assert.match(state.notes, new RegExp(`fallida\\(s\\): ${first.id}`));
+  const events = await readFile(join(repo, ".software-factory", "events.log"), "utf8");
+  assert.match(events, /avanza con fallidas/);
+  const status = JSON.parse((await run("status", repo)).stdout);
+  assert.equal(status.tasks_failed, 1);
+  assert.match(status.notes, /fallida/);
+});
+
+test("gh exit code decides: stderr noise with 0 succeeds, exit 1 aborts, garbage stdout persists nothing", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-gh-exit-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const fake = await writeFakeGh(tempDir);
+  const runWith = (mode, ...args) => execFileAsync(process.execPath, [runnerPath, ...args], {
+    env: { ...ghEnv(fake, tempDir), ...(mode ? { SF_FAKE_GH_MODE: mode } : {}) },
+  });
+  await runWith("", "init", repo, "--repo", "org/repo");
+  await runWith("", "start", repo);
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({ issues: [{ title: "Alpha" }] }));
+
+  // Regresión del heurístico por regex: "could not" en stderr con exit 0 NO es error.
+  const ok = JSON.parse((await runWith("", "issues", repo)).stdout);
+  assert.equal(ok.created, 1);
+  assert.equal((await loadState(repo)).issues.length, 1);
+
+  // exit != 0: aborta y nada se persiste.
+  const stateFile = join(repo, ".software-factory", "state.json");
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({ issues: [{ title: "Beta" }] }));
+  await assert.rejects(runWith("fail", "issues", repo), (error) => {
+    assert.equal(error.code, 1);
+    return true;
+  });
+  assert.deepEqual((await loadState(repo)).issues.map((i) => i.title), ["Alpha"], "exit!=0 no persiste nada nuevo");
+
+  // exit 0 con stdout inservible: error accionable, nada persistido.
+  await assert.rejects(runWith("garbage", "issues", repo), (error) => {
+    assert.match(error.stderr, /no utilizable/);
+    return true;
+  });
+  assert.deepEqual((await loadState(repo)).issues.map((i) => i.title), ["Alpha"]);
+  assert.ok(existsSync(stateFile), "state.json sigue íntegro");
+});
+
+test("repoSlug validates owner/name before touching gh; invalid slug creates nothing", async (t) => {
+  assert.equal(repoSlug({ repo: "org/repo" }), "org/repo");
+  for (const bad of [{ repo: "org" }, { repo: "" }, { repo: "a/b/c" }, {}]) {
+    assert.throws(() => repoSlug(bad), /repo GitHub válido/);
+  }
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-slug-guard-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(join(repo, ".software-factory"), { recursive: true });
+  const calls = [];
+  const state = { repo_path: repo, repo: "", issues: [] };
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({ issues: [{ title: "Alpha" }] }));
+  await assert.rejects(
+    createIssuesFromDraft(state, { runGh: async (args) => { calls.push(args); return "https://github.com/x/y/issues/1"; } }),
+    /sf\.mjs init/,
+    "el mensaje debe ser accionable",
+  );
+  assert.deepEqual(calls, [], "ninguna llamada gh con slug inválido");
+  // dry-run también falla rápido con config inválida
+  await assert.rejects(createIssuesFromDraft(state, { dryRun: true }));
+});
+
+test("saveState writes state.json atomically leaving no .tmp residue", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-atomic-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+  await run("init", repo, "--repo", "org/repo");
+  await run("start", repo);
+  const sfDir = join(repo, ".software-factory");
+  const files = await readdir(sfDir);
+  assert.deepEqual(files.filter((name) => name.endsWith(".tmp")), [], "sin .tmp residuales");
+  const state = JSON.parse(await readFile(join(sfDir, "state.json"), "utf8"));
+  assert.equal(state.repo, "org/repo");
+  assert.equal(state.tasks.length, 1);
 });
 
 test("grill prompt is fully Spanish (no CJK glyphs)", async () => {
