@@ -14,9 +14,11 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:Passed = 0
 $script:Failed = 0
 $script:Failures = @()
+$script:Executed = [System.Collections.Generic.List[string]]::new()
 
 function It {
   param([string]$Name, [scriptblock]$Body)
+  $script:Executed.Add($Name) | Out-Null
   try {
     & $Body
     $script:Passed++
@@ -314,12 +316,16 @@ It "sf-install: rutas por arnes" {
 
 Write-Host "`n== Resultado =="
 Write-Host "Pasadas: $script:Passed | Fallidas: $script:Failed"
-# Un It tragado por una llave mal pegada no debe pasar desapercibido
-$declared = @(Select-String -Path $PSCommandPath -Pattern '^\s*It\s+"').Count
-$executed = $script:Passed + $script:Failed
-Write-Host "Its declarados: $declared | ejecutados: $executed"
-if ($executed -lt $declared -or $declared -lt 21) {
-  Write-Host "  - Se ejecutaron menos tests que los declarados (minimo 21): posible It tragado" -ForegroundColor Red
+# Integridad por NOMBRE (sin minimo fijo que mantener a mano): todo It declarado en el
+# script debe haberse ejecutado; un It tragado por una llave o here-string mal pegado
+# se reporta por nombre. Convencion: ningun It dentro de here-strings o comentarios.
+$declaredNames = @(Select-String -Path $PSCommandPath -Pattern '^\s*It\s+"([^"]+)"' |
+  ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+$executedNames = @($script:Executed | Sort-Object -Unique)
+$missing = @($declaredNames | Where-Object { $_ -notin $executedNames })
+Write-Host "Its declarados: $($declaredNames.Count) | ejecutados: $($executedNames.Count)"
+if ($missing.Count -gt 0) {
+  Write-Host "  - Its declarados pero no ejecutados: $($missing -join '; ')" -ForegroundColor Red
   exit 1
 }
 if ($script:Failed -gt 0) {
