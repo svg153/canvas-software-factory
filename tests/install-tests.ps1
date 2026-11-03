@@ -304,7 +304,9 @@ It "sf-install: --check nunca reporta archivos fuera del layout gestionado" {
     Assert-True ($LASTEXITCODE -eq 0) "ajenos no deben causar exit 1"
     Assert-True (-not (($out -join "`n") -match 'STALE')) "reporto ajeno: $out"
   } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
-}It "sf-install: rutas por arnes" {
+}
+
+It "sf-install: rutas por arnes" {
   $out = & node --input-type=module -e "import {targetsFor} from './tools/sf-install.mjs'; console.log(JSON.stringify(['copilot','claude','codex','opencode'].map(h=>targetsFor(h,'/h').skillDir.replace(/\\\\/g,'/'))))"
   $out = $out.Replace('\\','/')
   Assert-True ($out -match '/h/.copilot/skills/software-factory' -and $out -match '/h/.config/opencode/skill/software-factory' -and $out -match '.codex/skills' -and $out -match '.claude/skills') "rutas incorrectas: $out"
@@ -312,6 +314,14 @@ It "sf-install: --check nunca reporta archivos fuera del layout gestionado" {
 
 Write-Host "`n== Resultado =="
 Write-Host "Pasadas: $script:Passed | Fallidas: $script:Failed"
+# Un It tragado por una llave mal pegada no debe pasar desapercibido
+$declared = @(Select-String -Path $PSCommandPath -Pattern '^\s*It\s+"').Count
+$executed = $script:Passed + $script:Failed
+Write-Host "Its declarados: $declared | ejecutados: $executed"
+if ($executed -lt $declared -or $declared -lt 21) {
+  Write-Host "  - Se ejecutaron menos tests que los declarados (minimo 21): posible It tragado" -ForegroundColor Red
+  exit 1
+}
 if ($script:Failed -gt 0) {
   $script:Failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
   exit 1
