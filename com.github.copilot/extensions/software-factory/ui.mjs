@@ -9,13 +9,16 @@ const PHASE_LABELS = {
 };
 const TASK_STATUSES = new Set(["pending", "awaiting_agent", "done", "failed"]);
 
-export function createInitPayload({ repo, project, projectOwner, rounds }) {
-  return {
+export function createInitPayload({ repo, project, projectOwner, rounds, force }) {
+  const payload = {
     repo,
     project,
     project_owner: projectOwner,
     rounds,
   };
+  // #88: force solo viaja si está activo, para no alterar el contrato init existente.
+  if (force) payload.force = true;
+  return payload;
 }
 
 export function routeWithRepo(path, repo) {

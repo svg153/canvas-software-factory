@@ -173,6 +173,68 @@ test("passes the form Project owner through the action route to runner arguments
   ]);
 });
 
+test("#88: initRunnerArgs añade --force solo cuando input.force", () => {
+  assert.deepEqual(initRunnerArgs("C:\\repo", { repo: "o/r", force: true }), ["init", "C:\\repo", "--repo", "o/r", "--force"]);
+  assert.deepEqual(initRunnerArgs("C:\\repo", { repo: "o/r" }), ["init", "C:\\repo", "--repo", "o/r"]);
+});
+
+test("#88: /action difunde code y message de errores con .code propio", async (t) => {
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\session\\workspace",
+    readState: async () => null,
+    ensureWatch() {},
+    applyAction: async () => {
+      throw Object.assign(new Error("boom detalle del runner"), { code: "sf_init_fallo" });
+    },
+    subscribe() {},
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  t.after(() => new Promise((resolveClose, reject) => {
+    server.close((error) => error ? reject(error) : resolveClose());
+  }));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-sf-action-token": await actionTokenFrom(server),
+    },
+    body: JSON.stringify({ actionName: "init", input: {} }),
+  });
+  assert.equal(response.status, 400);
+  const result = await response.json();
+  assert.equal(result.error, "sf_init_fallo");
+  assert.equal(result.message, "boom detalle del runner");
+});
+
+test("#88: errores sin .code siguen cayendo al código genérico sf_solicitud_fallida", async (t) => {
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\session\\workspace",
+    readState: async () => null,
+    ensureWatch() {},
+    applyAction: async () => {
+      throw new Error("inesperado");
+    },
+    subscribe() {},
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  t.after(() => new Promise((resolveClose, reject) => {
+    server.close((error) => error ? reject(error) : resolveClose());
+  }));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-sf-action-token": await actionTokenFrom(server),
+    },
+    body: JSON.stringify({ actionName: "init", input: {} }),
+  });
+  const result = await response.json();
+  assert.equal(result.error, "sf_solicitud_fallida");
+  assert.equal("message" in result, false, "errores sin code no deben difundir su message (posibles rutas internas)");
+});
+
 test("does not re-emit issue implementations across rounds or legacy task shapes", () => {
   const existingIssue = { number: 12, title: "Existing issue" };
   const newIssue = { number: 13, title: "New issue" };

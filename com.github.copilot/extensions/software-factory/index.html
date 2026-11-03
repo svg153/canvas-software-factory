@@ -51,6 +51,11 @@
   <button class="btn pause" id="pause">⏸ Pausa</button>
   <span class="status" id="status">sin estado</span>
 </header>
+<div class="round" id="repopath" title="Directorio que gestiona este panel" style="margin:-8px 0 8px"></div>
+<div class="init" id="repobar" style="margin:0 0 12px">
+  <input id="repoInput" placeholder="ruta del workspace (C:\...\mi-repo)" size="42" title="Ruta absoluta del repositorio git que quiere gestionar este panel. El host de extensiones no conoce tu sesión: escribe la ruta aquí y pulsa «Usar repo»." />
+  <button class="btn" id="setRepo" title="Aplicar la ruta escrita">Usar repo</button>
+</div>
 
 <div class="pipeline" id="pipeline"></div>
 
@@ -64,11 +69,13 @@
     <div id="issues"><div class="empty">Ninguna todavía.</div></div>
     <h2 style="margin-top:14px">Configurar</h2>
     <div class="init">
-      <input id="ghrepo" placeholder="owner/repo" size="18" />
-      <input id="project" placeholder="Project id (opcional)" size="18" />
-      <input id="projectOwner" placeholder="Project owner (opcional)" size="18" />
-      <input id="rounds" placeholder="rounds" size="6" value="3" />
-      <button class="btn" id="initBtn">Init</button>
+      <input id="ghrepo" placeholder="owner/repo" size="18" title="Repositorio en GitHub, formato owner/name (ej. svg153/canvas-software-factory)" />
+      <input id="project" placeholder="Project board ID (opc.)" size="18" title="NÚMERO del board de GitHub Project (el de su URL, p. ej. .../projects/5 → 5; o el id PVT_xxx). Vacío = sin Project. Usa «Detectar» para rellenarlo desde el repo." />
+      <button class="btn" id="detectBtn" title="Detectar owner/repo desde git remote origin y el Project vinculado al repo (gh api)">Detectar</button>
+      <input id="projectOwner" placeholder="Project owner (opc.)" size="18" title="Usuario u organización dueña del Project. Por defecto: el owner del repo." />
+      <input id="rounds" placeholder="rounds" size="6" value="3" title="Número de rounds del bucle" />
+      <label title="Sobrescribe el estado existente de .software-factory al hacer Init: perderás el progreso (tareas, issues, fase actual)."><input type="checkbox" id="forceInit" style="margin-right:4px" />Forzar reinicio</label>
+<button class="btn" id="initBtn">Init</button>
     </div>
   </div>
 </div>

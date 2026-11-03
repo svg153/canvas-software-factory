@@ -147,13 +147,18 @@ export function createFactoryServer({
     } catch (error) {
       if (!(error instanceof HttpError)) console.error("[software-factory] request failed:", error);
       const status = error instanceof HttpError ? error.status : 400;
-      const code = error instanceof HttpError ? error.code : "sf_solicitud_fallida";
+      // #88: errores intencionales con .code propio (CanvasError) difunden código y mensaje;
+      // los errores crudos (p. ej. ENOENT con rutas internas) siguen reducidos al código genérico
+      // para no filtrar paths (bloqueado por el test de seguridad de /action).
+      const ownCode = !(error instanceof HttpError) && typeof error?.code === "string";
+      const code = error instanceof HttpError || ownCode ? error.code : "sf_solicitud_fallida";
       if (res.headersSent) {
         res.end();
         return;
       }
       res.writeHead(status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: code }));
+      const message = ownCode ? String(error?.message || "").slice(0, 300) : "";
+      res.end(JSON.stringify(message && message !== code ? { error: code, message } : { error: code }));
     }
   });
   return server;

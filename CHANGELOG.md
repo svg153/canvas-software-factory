@@ -1,6 +1,57 @@
 # Changelog
 
-## Unreleased
+## v0.1.5
+
+### Fixed
+- Init sobre un repo con estado existente mostraba solo `⚠ sf_solicitud_fallida` (#88):
+  el runner aborta con «Ya existe estado… usa --force» pero ese mensaje se perdía. Ahora
+  la rama init de `extension.mjs` captura el fallo y, si pide `--force`, devuelve un aviso
+  accionable (`needs_force`); si no, lanza `sf_init_fallo` con el detalle del runner.
+- `http.mjs` difunde el `code` y `message` de los errores intencionales (CanvasError), pero
+  mantiene el código genérico sin mensaje para errores crudos (no se filtran rutas internas).
+- Nuevo checkbox «Forzar reinicio» junto a Init: añade `--force` al runner (`initRunnerArgs` +
+  `createInitPayload`, que solo incluye `force` cuando está marcado para no alterar el contrato).
+
+### Changed
+- `app.mjs` registra `⚠ <code>: <message>` y, ante `needs_force`, sugiere marcar «Forzar reinicio».
+
+## v0.1.4
+
+### Fixed
+- «Detectar»/autofill del Project (#83): la consulta GraphQL pedía `owner { login }`
+  directamente sobre `ProjectV2Owner`, que es una unión (`User | Organization | Team`)
+  sin ese campo; GitHub respondía `undefinedField` y `gh` fallaba. Ahora `login` se
+  pide con inline fragments (`... on User`, `... on Organization`), como exige la API.
+
+## v0.1.3
+
+### Added
+- Autofill de `owner/repo` (#82): al pulsar «Usar repo» (o el botón «Detectar»), el
+  servidor deriva el identificador GitHub del workspace con `git remote get-url origin`
+  (https, ssh y scp-form) y rellena el campo; no pisa ediciones manuales.
+- Detección del Project vinculado (#83): acción `autofill` consulta GraphQL
+  `projectsV2` vía `gh api` y rellena «Project board ID» y «Project owner» si hay un
+  único Project; lista las opciones si hay varios; registra el motivo si no hay o
+  falla la API.
+- Botón «Detectar» en la barra Configurar para lanzar el autofill bajo demanda.
+
+### Changed
+- El campo Project se rotula ahora «Project board ID (opc.)» con tooltip que explica
+  que es el número de la URL del board (`.../projects/5` → 5) o el id `PVT_xxx` (#84).
+  La clave del payload (`project`) no cambia.
+
+## v0.1.2
+
+### Fixed
+- Canvas Init appeared dead: the extension host is not bound to any chat session, so
+  the panel had no real repo. The panel now has a **Repo field** ("Usar repo") that
+  accepts any absolute path that is a git workspace; non-git paths are rejected
+  (`sf_repo_no_permitido`) and the previous repo is kept on failure.
+- `/state` errors are reported in the panel log instead of failing silently.
+- Writes are guarded to git workspaces only (`repoIsGitWorkspace`), avoiding stray
+  `.software-factory/` directories.
+- Clearer init labels: "Project nº" (number of the GitHub Project) vs "projectOwner"
+  (owner/org of that Project, defaults to the repo owner) with tooltips.
 
 ### Added
 - Release workflow (`release.yml`), `tools/check-release.mjs` and `tools/bump-version.mjs`.

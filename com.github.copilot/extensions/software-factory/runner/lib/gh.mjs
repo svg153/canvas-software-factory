@@ -34,6 +34,38 @@ export function validateInitInputs({ repo = "", project = "", projectOwner = "" 
   return errors;
 }
 
+// Detección del Project enlazado al repo (#83) vía GraphQL projectsV2.
+// ProjectV2Owner es una unión (User|Organization|Team): `login` solo existe en los
+// fragments, no en la unión — pedirlo directo devuelve undefinedField y gh sale con error.
+const PROJECTS_V2_QUERY =
+  "query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ projectsV2(first:10){ nodes{ number title owner{ __typename ... on User { login } ... on Organization { login } } } } } }";
+
+export function projectsV2Args(slug) {
+  if (typeof slug !== "string" || !REPO_RE.test(slug) || slug.split("/")[1].startsWith("-")) {
+    throw new Error(`slug de repo inválido: ${JSON.stringify(slug)}`);
+  }
+  const [owner, name] = slug.split("/");
+  return ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `query=${PROJECTS_V2_QUERY}`];
+}
+
+export function parseProjectsV2(stdout) {
+  let data;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  const nodes = data?.data?.repository?.projectsV2?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  return nodes
+    .filter((n) => Number.isFinite(Number(n?.number)))
+    .map((n) => ({ number: Number(n.number), title: n.title || "", owner: n.owner?.login || "" }));
+}
+
+export async function listLinkedProjects(slug, { runGh = gh } = {}) {
+  return parseProjectsV2(await runGh(projectsV2Args(slug)));
+}
+
 export function projectItemAddArgs(state, url) {
   const owner = state.project_owner || state.repo?.split("/")[0];
   if (!owner) throw new Error("Project owner is required to add an issue to a project");

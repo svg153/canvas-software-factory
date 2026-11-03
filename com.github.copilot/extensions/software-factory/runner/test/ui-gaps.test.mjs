@@ -45,6 +45,18 @@ test("createInitPayload usa claves del contrato init (repo = owner/repo de GitHu
   );
 });
 
+test("#88: createInitPayload añade force solo cuando está marcado", () => {
+  assert.deepEqual(
+    createInitPayload({ repo: "o/r", project: "5", projectOwner: "me", rounds: 2, force: true }),
+    { repo: "o/r", project: "5", project_owner: "me", rounds: 2, force: true },
+  );
+  assert.deepEqual(
+    createInitPayload({ repo: "o/r", project: "5", projectOwner: "me", rounds: 2, force: false }),
+    { repo: "o/r", project: "5", project_owner: "me", rounds: 2 },
+  );
+  assert.equal("force" in createInitPayload({ repo: "o/r", project: "", projectOwner: "", rounds: 3 }), false);
+});
+
 test("routeWithRepo codifica el repo y omite query vacía", () => {
   assert.equal(routeWithRepo("/state", ""), "/state");
   assert.equal(routeWithRepo("/state", "C:\\a b&c"), `/state?repo=${encodeURIComponent("C:\\a b&c")}`);
@@ -175,6 +187,32 @@ test("app.mjs: respuesta con error y fallo de fetch inicial se registran en el l
   assert.equal(down.sources.length, 0);
 });
 
+test("app.mjs: setRepo autodetecta owner/repo y Project (#82/#83)", async () => {
+  const { els, calls } = await runApp({
+    fetchImpl: async (url, opts) => {
+      if (url.startsWith("/action")) {
+        const body = JSON.parse(opts.body);
+        if (body.actionName === "autofill") {
+          return { json: async () => ({ status: "autofill", github_repo: "o/r", projects: [{ number: 5, title: "Board", owner: "me" }] }) };
+        }
+        return { json: async () => ({ status: "ok" }) };
+      }
+      return { json: async () => ({ status: "running", phase: "plan" }) };
+    },
+  });
+  els.repoInput = { value: "C:\\x" };
+  await els.setRepo.onclick();
+  assert.equal(els.ghrepo.value, "o/r");
+  assert.equal(els.project.value, "5");
+  assert.equal(els.projectOwner.value, "me");
+  // Edición manual: no se pisa en siguientes «Usar repo».
+  els.ghrepo.value = "manual/x";
+  await els.setRepo.onclick();
+  assert.equal(els.ghrepo.value, "manual/x");
+  const autofills = calls.filter((c) => c.url.startsWith("/action") && JSON.parse(c.opts.body).actionName === "autofill");
+  assert.equal(autofills.length, 1);
+});
+
 test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas", () => {
   const src = read("extension.mjs");
   for (const name of ["get_state", "play", "pause", "init_factory", "next_work"]) {
@@ -184,6 +222,9 @@ test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas"
   assert.match(src, /const repoDir = repoFrom\(input\)/);
   assert.match(src, /const repoFrom = \(input\) => allowlist\.resolve\(input\?\.repo\)/);
   assert.match(src, /initRunnerArgs\(repoDir, input\)/);
+  // #88: la rama init captura el exit 1 del runner y lo traduce (aviso needs_force o CanvasError).
+  assert.match(src, /if \(\/--force\/\.test\(detail\)\) return \{ status: "aviso", needs_force: true, message: detail \}/);
+  assert.match(src, /throw Object\.assign\(new CanvasError\("sf_init_fallo", detail\)/);
   assert.match(src, /startGuardError\(await readState\(repoDir\)\)/);
   assert.match(src, /throw new CanvasError\("sf_unknown_action"/);
   // Todo spawn del runner debe ocultar la consola: windowsHide en cada sitio execFile.
