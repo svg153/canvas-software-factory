@@ -36,11 +36,23 @@ export function getFlag(argv, flag) {
 }
 
 export function parseCliArgs(argv, env = {}) {
-  const port = getFlag(argv, "--port") ?? env.SF_PORT;
-  return { repo: getFlag(argv, "--repo") ?? env.SF_REPO, port: port === undefined ? DEFAULT_PORT : Number(port) };
+  const rawPort = getFlag(argv, "--port") ?? env.SF_PORT;
+  let port = DEFAULT_PORT;
+  if (rawPort !== undefined) {
+    port = Number(rawPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`invalid port: ${JSON.stringify(rawPort)} (expected an integer between 1 and 65535)`);
+    }
+  }
+  return { repo: getFlag(argv, "--repo") ?? env.SF_REPO, port };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { child } = startSidecar(parseCliArgs(process.argv.slice(2), process.env));
-  process.on("SIGINT", () => child.kill());
+  try {
+    const { child } = startSidecar(parseCliArgs(process.argv.slice(2), process.env));
+    process.on("SIGINT", () => child.kill());
+  } catch (err) {
+    console.error(`sidecar: ${err.message}`);
+    process.exit(1);
+  }
 }

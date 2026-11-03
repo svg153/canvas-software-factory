@@ -19,7 +19,7 @@ jobs:
         run: npm test
         working-directory: com.github.copilot/extensions/software-factory
       - name: Desktop JS tests (config/paths/sidecar parser; no Rust, cargo NOT run)
-        run: node --test desktop/test/
+        run: node --test desktop/test/desktop.test.mjs
       - name: Check JavaScript syntax
         run: find com.github.copilot tools desktop -type f -name '*.mjs' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
       - name: Validate manifests

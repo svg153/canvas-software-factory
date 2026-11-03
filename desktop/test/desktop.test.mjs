@@ -44,6 +44,14 @@ test("missing entrypoint gives a clear error", () => {
     assert.equal(getFlag(["--port"], "--port"), undefined);
   });
 
+  test("flag parser: invalid port fails fast with a clear error", () => {
+    assert.throws(() => parseCliArgs(["--port", "abc"]), /invalid port/);
+    assert.throws(() => parseCliArgs(["--port", "0"]), /invalid port/);
+    assert.throws(() => parseCliArgs(["--port", "70000"]), /invalid port/);
+    assert.throws(() => parseCliArgs(["--port", "4317.5"]), /invalid port/);
+    assert.throws(() => parseCliArgs([], { SF_PORT: "NaN" }), /invalid port/);
+  });
+
   test("tauri.conf.json: frontendDist and icons exist", () => {
     const conf = JSON.parse(read("src-tauri/tauri.conf.json"));
     assert.ok(fs.statSync(path.join(root, "src-tauri", conf.build.frontendDist)).isDirectory());
