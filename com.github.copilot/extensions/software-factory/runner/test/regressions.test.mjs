@@ -1935,7 +1935,7 @@ test("planPrompt dedups against inventory and explains adoption via number", () 
   assert.match(prompt, /TRABAJO ABIERTO EXISTENTE/);
   assert.match(prompt, /#5 Bug login/);
   assert.match(prompt, /"number"/, "explica el campo number para adoptar");
-  assert.match(prompt, /NO creees|no recrees|NUNCA pongas/i);
+  assert.match(prompt, /NO crees|no recrees|NUNCA pongas/i);
 
   const noInv = planPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, tasks: [], inventory: null }, { round: 1 });
   assert.doesNotMatch(noInv, /TRABAJO ABIERTO EXISTENTE/);
@@ -1944,8 +1944,11 @@ test("planPrompt dedups against inventory and explains adoption via number", () 
 test("canvas and UI wire run_intake to the intake action and render inventory", async () => {
   const ext = await readFile(join(extensionDir, "extension.mjs"), "utf8");
   assert.match(ext, /name: "run_intake"/);
-  assert.match(ext, /applyAction\(repoDir, "intake"\)/);
-  assert.match(ext, /actionName === "intake"[\s\S]{0,240}intakeRunnerArgs/);
+  assert.match(ext, /applyAction\(repoFrom\(input\), "intake"\)/);
+
+  // Arquitectura cliente fino (#40): el dispatch de "intake" vive en service.mjs.
+  const service = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
+  assert.match(service, /actionName === "intake"[\s\S]{0,240}intakeRunnerArgs/);
 
   const app = await readFile(join(extensionDir, "app.mjs"), "utf8");
   assert.match(app, /intakeBtn[\s\S]{0,120}action\("run_intake"/);

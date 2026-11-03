@@ -151,21 +151,6 @@ const factoryCanvas = createCanvas({
         },
       },
       handler({ input }) {
-        const repoDir = input?.repo || session?.workspacePath || process.cwd();
-        return applyAction(repoDir, "intake");
-      },
-    },
-    {
-      name: "run_intake",
-      description:
-        "Ingesta del repo: lee con gh el trabajo YA abierto (issues abiertas, PRs abiertas e items del Project) y lo guarda en state.inventory. Es de solo lectura y resiliente. Discover/plan (round 1) lo usan para continuar un repo 'a medias' y no recrear issues existentes.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          repo: { type: "string" },
-        },
-      },
-      handler({ input }) {
         return applyAction(repoFrom(input), "intake");
       },
     },
