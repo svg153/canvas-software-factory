@@ -69,7 +69,7 @@ const factoryCanvas = createCanvas({
   id: "software-factory",
   displayName: "Software Factory",
   description:
-    "Panel de control de la fábrica de software: discover → plan GSD → grill-me → issues → implement → review, en rounds autónomos.",
+    "Panel tipo GitHub Project: pipeline por fases, tablero kanban, grafo de dependencias por olas y orden de merge, en rounds autónomos.",
   inputSchema: {
     type: "object",
     properties: {
@@ -160,6 +160,20 @@ const factoryCanvas = createCanvas({
       description: "#90: vincula las issues abiertas de GitHub al run para no duplicarlas.",
       handler({ input }) {
         return applyAction(repoFrom(input), "import_issues");
+      },
+    },
+    {
+      name: "create_project",
+      description: "Crea el GitHub Project (tablero kanban) para el run si no existe y lo enlaza al repo.",
+      handler({ input }) {
+        return applyAction(repoFrom(input), "create_project");
+      },
+    },
+    {
+      name: "sync_project",
+      description: "Sincroniza el campo Status del Project con el tablero derivado del estado (Backlog/Todo/In Progress/In Review/Done).",
+      handler({ input }) {
+        return applyAction(repoFrom(input), "sync_project");
       },
     },
   ],

@@ -1,13 +1,15 @@
 {
   "id": "software-factory",
   "name": "Software Factory",
-  "description": "Panel de control de una fábrica de software autónoma: discover → plan GSD → grill-me → issues en GitHub Project → implement → review/audit, en rounds que se repiten.",
+  "description": "Panel tipo GitHub Project: pipeline por fases, tablero kanban (Backlog/Ready/In Progress/In Review/Done), grafo de dependencias por olas y orden de merge; issues → Project → implement por olas → review, en rounds.",
   "keywords": [
     "software-factory",
     "automation",
     "github-project",
+    "kanban",
     "issues",
-    "pipeline"
+    "pipeline",
+    "dependencies"
   ],
   "main": "extension.mjs"
 }

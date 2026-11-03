@@ -6,13 +6,14 @@ import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
   loadState, saveState, defaultState, logEvent, paths, nowIso,
-  newTask, writeWorkOrder, openTasks, failedTasks, unclaimedIssues, hasResult, PHASES,
+  newTask, writeWorkOrder, openTasks, failedTasks, hasResult, PHASES,
   HARNESSES,
 } from "./lib/state.mjs";
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt, flattenIssueText,
 } from "./lib/prompts.mjs";
 import { createIssuesFromDraft, validateInitInputs } from "./lib/gh.mjs";
+import { claimableIssues, blockedIssues } from "./lib/graph.mjs";
 import { startGuardError } from "./lib/actions.mjs";
 
 const [, , cmd, repoArg = ".", ...rest] = process.argv;
@@ -42,7 +43,18 @@ const phasePlan = {
   plan: (s) => [{ title: `Plan GSD round ${s.round}`, prompt: planPrompt }],
   grill: (s) => [{ title: `Grill-me al plan round ${s.round}`, prompt: grillPrompt }],
   implement: (s) => {
-    return unclaimedIssues(s)
+    // Wave gating: solo se emiten work orders de issues reclamables ahora mismo
+    // (sin tarea viva y con todas sus dependencias implementadas). El resto se
+    // libera en olas posteriores a medida que completan sus dependencias.
+    // Las ya emitidas en ESTE round quedan fuera: una tarea failed no se
+    // re-clama dentro del mismo round (se conserva el historial de fallos).
+    const inRound = new Set(
+      s.tasks
+        .filter((t) => t.phase === "implement" && t.round === s.round)
+        .map((t) => Number(t.issue?.number ?? t.meta?.issue?.number)),
+    );
+    return claimableIssues(s)
+      .filter((i) => !inRound.has(Number(i.number)))
       .map((i) => ({
         title: `Implementar #${i.number} ${flattenIssueText(i.title)}`,
         prompt: (st, t) => implementPrompt(st, t, i),
@@ -175,27 +187,54 @@ async function cmdNext() {
   const log = (msg) => (dry ? Promise.resolve() : logEvent(repoPath, msg));
   // Si la fase no tiene tareas: si ya tuvo y están done, avanza; si no tuvo, se generan.
   const hasPhaseTasks = () => state.tasks.some((t) => t.phase === state.phase && t.round === state.round);
+  const noteBlocked = async () => {
+    if (state.phase !== "implement") return;
+    const blocked = blockedIssues(state);
+    if (!blocked.length) return;
+    state.notes = (state.notes || "") +
+      `\nround ${state.round} implement: ${blocked.length} issue(s) bloqueada(s) por dependencias: ` +
+      blocked.map((b) => `#${b.number}←[${(b.depends_on || []).join(",")}]`).join(" ");
+    await log(`implement round ${state.round}: bloqueadas ${blocked.map((b) => `#${b.number}`).join(",")}`);
+  };
   let advancePreview = null;
   if (openTasks(state).length === 0) {
-    if (hasPhaseTasks()) {
-      // Tareas fallidas no se re-claman, pero el avance no puede ser silencioso.
-      const failed = failedTasks(state);
-      if (failed.length) {
-        state.notes = (state.notes || "") +
-          `\nround ${state.round} ${state.phase}: ${failed.length} tarea(s) fallida(s): ${failed.map((f) => f.id).join(", ")}`;
-        await log(`fase ${state.phase} (round ${state.round}) avanza con fallidas: ${failed.map((f) => f.id).join(", ")}`);
-      }
-      advancePreview = await advance(state, { dryRun: dry });
-    }
-    // advance puede terminar la fábrica (status=done): entonces no se emite nada más.
-    if (state.status === "running" && openTasks(state).length === 0 && !hasPhaseTasks()) {
+    // En implement, antes de avanzar: si hay issues newly reclamables (ola
+    // desbloqueada al completarse una dependencia), se emiten y NO se avanza.
+    if (state.phase === "implement" && claimableIssues(state).length > 0) {
       const n = await emitTasks(state, { dryRun: dry });
-      if (n === 0) advancePreview = await advance(state, { dryRun: dry }); // fases mecánicas o sin contenido (issues, implement sin issues)
+      if (n > 0) await log(`implement round ${state.round}: emitidas ${n} tarea(s) de olas desbloqueadas`);
+    }
+    if (state.status === "running" && openTasks(state).length === 0) {
+      if (hasPhaseTasks()) {
+        // Tareas fallidas no se re-claman, pero el avance no puede ser silencioso.
+        const failed = failedTasks(state);
+        if (failed.length) {
+          state.notes = (state.notes || "") +
+            `\nround ${state.round} ${state.phase}: ${failed.length} tarea(s) fallida(s): ${failed.map((f) => f.id).join(", ")}`;
+          await log(`fase ${state.phase} (round ${state.round}) avanza con fallidas: ${failed.map((f) => f.id).join(", ")}`);
+        }
+        await noteBlocked();
+        advancePreview = await advance(state, { dryRun: dry });
+      }
+      // advance puede terminar la fábrica (status=done): entonces no se emite nada más.
+      if (state.status === "running" && openTasks(state).length === 0 && !hasPhaseTasks()) {
+        const n = await emitTasks(state, { dryRun: dry });
+        if (n === 0) {
+          await noteBlocked(); // fases mecánicas o sin contenido (issues, implement sin reclamables)
+          advancePreview = await advance(state, { dryRun: dry });
+        }
+      }
     }
   }
   const open = openTasks(state);
   const failedNow = failedTasks(state).map((f) => ({ id: f.id, title: f.title }));
   const base = { dry_run: dry, ...(advancePreview ? { advance: advancePreview } : {}) };
+  if (state.phase === "implement" && state.status === "running") {
+    const blockedNow = blockedIssues(state).map((b) => ({
+      number: b.number, title: b.title, wave: b.wave ?? 0, depends_on: b.depends_on || [],
+    }));
+    if (blockedNow.length) base.blocked = blockedNow;
+  }
   if (printPrompt) {
     const t = wantedId ? open.find((x) => x.id === wantedId) : open[0];
     if (!t) { console.error(wantedId ? `Tarea abierta no encontrada: ${wantedId}` : `Sin tareas abiertas (fase ${state.phase}).`); process.exitCode = 3; return; }

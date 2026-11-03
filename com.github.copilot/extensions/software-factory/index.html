@@ -45,6 +45,27 @@
   #log { font-family:Consolas,monospace; font-size:12px; color:var(--mut); max-height:120px; overflow:auto; margin-top:16px; white-space:pre-wrap; }
   .init { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
   .init input { background:var(--bg); border:1px solid var(--line); color:var(--txt); padding:6px 8px; border-radius:6px; }
+  .tabs { display:flex; gap:6px; margin:0 0 14px; flex-wrap:wrap; }
+  .tab { border:1px solid var(--line); background:var(--card); color:var(--mut); padding:6px 16px; border-radius:8px 8px 0 0; cursor:pointer; font-weight:600; font-size:13px; }
+  .tab.active { color:var(--txt); border-color:var(--run); background:#1c2431; }
+  .board { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:10px; align-items:start; overflow-x:auto; }
+  @media (max-width:1100px){ .board{grid-template-columns:repeat(3,1fr);} }
+  @media (max-width:700px){ .board{grid-template-columns:1fr;} }
+  .col { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px; min-height:90px; }
+  .col h3 { font-size:12px; color:var(--mut); margin-bottom:8px; text-transform:uppercase; letter-spacing:.04em; }
+  .col-done h3 { color:var(--acc); } .col-in_progress h3 { color:var(--run); } .col-backlog h3 { color:#f85149; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:13px; }
+  .card a { display:block; }
+  .graphwrap { overflow:auto; max-height:520px; border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:8px; }
+  .dag { display:block; }
+  .dagEdge { fill:none; stroke:var(--mut); stroke-width:1.5; }
+  .dagNode rect { fill:#1c2431; stroke:var(--run); stroke-width:1; }
+  .dagNode.wave1 rect { stroke:var(--acc); } .dagNode.wave2 rect { stroke:var(--warn); } .dagNode.wave3 rect { stroke:#bc8cff; }
+  .dagNum { fill:var(--mut); font-size:10px; font-family:Consolas,monospace; }
+  .dagTitle { fill:var(--txt); font-size:12px; }
+  .waveBlock { margin-bottom:14px; }
+  .waveBlock h3 { font-size:12px; color:var(--run); margin-bottom:6px; }
+  .waveBlock ol { margin-left:18px; }
 </style>
 </head>
 <body>
@@ -61,6 +82,14 @@
   <button class="btn" id="setRepo" title="Aplicar la ruta escrita">Usar repo</button>
 </div>
 
+<div class="tabs" id="tabs">
+  <button class="tab active" data-tab="pipeline" type="button">Pipeline</button>
+  <button class="tab" data-tab="board" type="button">Tablero</button>
+  <button class="tab" data-tab="graph" type="button">Grafo</button>
+  <button class="tab" data-tab="order" type="button">Orden de merge</button>
+</div>
+
+<section id="tab-pipeline">
 <div class="pipeline" id="pipeline"></div>
 
 <div class="grid">
@@ -83,6 +112,31 @@
     </div>
   </div>
 </div>
+</section>
+
+<section id="tab-board" hidden>
+  <div class="panel">
+    <h2>Tablero kanban (derivado del estado)
+      <button class="btn" id="createBoardBtn" style="float:right;padding:4px 12px;font-size:12px" title="Crea un GitHub Project (tablero kanban) para este repo si no hay ninguno vinculado, y lo enlaza.">Crear board GitHub</button>
+      <button class="btn" id="syncBoardBtn" style="float:right;margin-right:8px;padding:4px 12px;font-size:12px" title="Empuja el estado de cada issue (Backlog/Todo/In Progress/In Review/Done) al campo Status del Project.">Sincronizar board</button>
+    </h2>
+    <div class="board" id="board"><div class="empty">Sin issues todavía.</div></div>
+  </div>
+</section>
+
+<section id="tab-graph" hidden>
+  <div class="panel">
+    <h2>Grafo de dependencias — de arriba (ola 0) a abajo (última ola)</h2>
+    <div class="graphwrap" id="graph"><div class="empty">Sin issues todavía.</div></div>
+  </div>
+</section>
+
+<section id="tab-order" hidden>
+  <div class="panel">
+    <h2>Orden de implementación / merge</h2>
+    <div id="order"><div class="empty">Sin issues todavía.</div></div>
+  </div>
+</section>
 
 <div class="panel" style="margin-top:16px">
   <h2>💡 Idea del usuario (vocal idea)</h2>

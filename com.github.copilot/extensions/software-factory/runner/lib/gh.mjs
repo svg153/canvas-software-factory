@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { sameIssue } from "./state.mjs";
+import { rebuildGraph } from "./graph.mjs";
 
 const run = promisify(execFile);
 
@@ -199,7 +200,10 @@ export function repoSlug(state) {
 }
 
 // Create issues from the draft JSON and add them to the GitHub Project (if set).
-// Draft schema: { "issues": [ { title, body, labels: [..], number? } ] }
+// Draft schema: { "issues": [ { id?, title, body, labels: [..], depends_on?: [refs], number? } ] }
+// `id` es una referencia local al draft y `depends_on` acepta ese id, un número de
+// issue (#12) o un título exacto; al terminar se normalizan a números reales y se
+// calculan las olas de implementación con rebuildGraph (vease graph.mjs).
 export async function createIssuesFromDraft(state, {
   dryRun = false,
   persistState = async () => {},
@@ -293,11 +297,29 @@ export async function createIssuesFromDraft(state, {
     }
     delete state.issue_failures[it.title];
     created.push({ title: it.title, url, number });
-    state.issues.push({ title: it.title, url, number, at: new Date().toISOString() });
+    state.issues.push({
+      title: it.title,
+      url,
+      number,
+      at: new Date().toISOString(),
+      draft_id: it.id ? String(it.id) : undefined,
+      depends_on: Array.isArray(it.depends_on) ? it.depends_on.map(String) : [],
+    });
     await persistState();
     await logAndAdd(state, url, runGh);
     await persistState();
   }
+  // Normaliza depends_on a números reales y asigna waves. En dry-run el state es
+  // una copia de trabajo que se descarta, así que no persistimos.
+  const graph = rebuildGraph(state);
+  if (graph.dropped.length) {
+    for (const d of graph.dropped) {
+      addNote(`dependencia descartada en #${d.issue}: ${JSON.stringify(d.ref)}${d.cycle ? " (ciclo roto)" : ""}`);
+    }
+    await persistState();
+  }
+  if (graph.changed && !dryRun) await persistState();
+  created.graph = { waves: graph.waves, dropped: graph.dropped.length };
   return created;
 }
 
@@ -310,4 +332,63 @@ async function logAndAdd(state, url, runGh = gh) {
     // Project add failures should not break the factory run; surface in note.
     state.notes = (state.notes || "") + `\nproject add failed for #${num}: ${e.message}`;
   }
+}
+
+// --- GitHub Project (kanban) board -------------------------------------------
+// gh CLI no expone "crear con template" ni gestionar vistas, así que creamos un
+// Project V2 normal (sus estados por defecto Backlog/Todo/In Progress/In Review/
+// Done equivalen al template kanban), lo enlazamos al repo y lo guardamos en el
+// state como project_id. Todo lo que falle aquí es blando: se anota, nunca rompe.
+export async function createProjectBoard(state, { runGh = gh, persistState = async () => {} } = {}) {
+  if (state.project_id) return { created: false, project_id: state.project_id, url: state.project_url || null };
+  const owner = state.project_owner || state.repo?.split("/")[0];
+  if (!owner || !OWNER_RE.test(owner)) throw new Error("No hay owner válido para crear el Project (define repo con sf.mjs init --repo owner/name)");
+  const title = `Software Factory — ${state.repo || owner}`;
+  const out = await runGh(["project", "create", "--owner", owner, "--title", title, "--format", "json"]);
+  let data;
+  try { data = JSON.parse(out); } catch { throw new Error(`salida de gh project create no utilizable: ${String(out).slice(0, 120)}`); }
+  const number = Number(data?.number);
+  if (!Number.isFinite(number)) throw new Error("gh project create no devolvió un número de Project válido");
+  state.project_id = String(number);
+  state.project_pvt_id = data.id || null;
+  state.project_url = data.url || null;
+  state.project_owner = owner;
+  const failures = [];
+  try {
+    await runGh(["project", "link", state.project_id, "--owner", owner, "--repo", repoSlug(state)]);
+  } catch (e) {
+    failures.push(`link: ${e.message}`);
+  }
+  await persistState();
+  return { created: true, project_id: state.project_id, url: state.project_url, title, failures };
+}
+
+// Opciones del campo Status de un Project V2 (equivalente al tablero kanban).
+export const BOARD_STATUS_OPTIONS = ["Backlog", "Todo", "In Progress", "In Review", "Done"];
+
+// Sincroniza el estado kanban de cada issue con el board. `edits` es una lista
+// {url, status}; item-edit resuelve el item por URL y el campo por nombre, así
+// que no necesitamos el pvt id del item. Los fallos se recogen, no lanzan.
+export async function syncProjectStatuses(state, edits, { runGh = gh } = {}) {
+  const owner = state.project_owner || state.repo?.split("/")[0];
+  if (!state.project_id || !owner) return { updated: 0, failures: [{ error: "no hay project_id/owner; crea el board primero" }] };
+  const wanted = new Set(BOARD_STATUS_OPTIONS);
+  let updated = 0;
+  const failures = [];
+  for (const { url, status } of edits || []) {
+    if (!url || url === "(dry-run)" || !wanted.has(status)) continue;
+    try {
+      await runGh([
+        "project", "item-edit", state.project_id,
+        "--owner", owner,
+        "--url", url,
+        "--field", "Status",
+        "--value", status,
+      ]);
+      updated += 1;
+    } catch (e) {
+      failures.push({ url, status, error: e.message });
+    }
+  }
+  return { updated, failures };
 }

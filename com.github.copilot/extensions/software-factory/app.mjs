@@ -3,6 +3,25 @@ import { createInitPayload, renderGithub, renderState, routeWithRepo } from "/ui
 const params = new URLSearchParams(location.search);
 let repo = params.get("repo") || "";
 let events = null;
+let lastState = null;
+let lastGithub = null;
+
+// Números de issue conocidos por el state que ya NO están entre las abiertas de
+// GitHub: alimentan la columna Done del tablero (solo si hay lectura reciente).
+function closedNumbers(state) {
+  if (!lastGithub || !Array.isArray(lastGithub.issues) || !state?.issues) return null;
+  const open = new Set(lastGithub.issues.map((i) => Number(i.number)));
+  const closed = new Set();
+  for (const i of state.issues) {
+    const n = Number(i.number);
+    if (Number.isFinite(n) && !open.has(n)) closed.add(n);
+  }
+  return closed;
+}
+
+function renderAll() {
+  renderState(lastState, document, closedNumbers(lastState));
+}
 
 function log(message) {
   const element = document.getElementById("log");
@@ -37,6 +56,30 @@ document.getElementById("pause").onclick = () => action("pause");
 document.getElementById("detectBtn").onclick = () => autofill();
 document.getElementById("ghBtn").onclick = () => refreshGithub();
 document.getElementById("importBtn").onclick = () => importExisting();
+document.getElementById("createBoardBtn").onclick = async () => {
+  const result = await action("create_project");
+  if (!result.error) {
+    log(result.created
+      ? `board creado: Project #${result.project_id}${result.url ? ` — ${result.url}` : ""}${(result.failures || []).length ? ` (avisos: ${result.failures.join("; ")})` : ""}`
+      : `ya había board vinculado: #${result.project_id}`);
+    await loadRepo().catch(() => {}); // refresca state (project_id nuevo) sin perder SSE
+  }
+};
+document.getElementById("syncBoardBtn").onclick = async () => {
+  const result = await action("sync_project");
+  if (!result.error) log(`sync board: ${result.updated} item(s) actualizados${result.failures ? `, ${result.failures} fallo(s)` : ""}`);
+};
+
+// Pestañas Pipeline / Tablero / Grafo / Orden de merge.
+const tabButtons = [...(document.getElementById("tabs")?.children || [])];
+function selectTab(name) {
+  for (const btn of tabButtons) btn.classList.toggle("active", btn.dataset.tab === name);
+  for (const id of ["pipeline", "board", "graph", "order"]) {
+    const section = document.getElementById(`tab-${id}`);
+    if (section) section.hidden = id !== name;
+  }
+}
+for (const btn of tabButtons) btn.addEventListener("click", () => selectTab(btn.dataset.tab));
 
 // #90: ver el estado real del repo en GitHub (issues/PRs abiertos) y poder continuar
 // trabajo existente en lugar de empezar siempre de cero.
@@ -44,6 +87,8 @@ async function refreshGithub() {
   const result = await action("github_status");
   if (result.error) return result;
   renderGithub(result);
+  lastGithub = result;
+  renderAll();
   log(`github${result.slug ? ` (${result.slug})` : ""}: ${result.issues?.length ?? 0} issues abiertas, ${result.pulls?.length ?? 0} PRs${result.note ? ` — ${result.note}` : ""}`);
   return result;
 }
@@ -106,9 +151,13 @@ async function loadRepo() {
   const state = await (await fetch(routeWithRepo("/state", repo), { headers: { "x-sf-token": actionToken } })).json();
   if (state.error) throw new Error(state.error);
   showRepoPath(state.repo || repo);
-  renderState(state.status === "missing" ? null : state);
+  lastState = state.status === "missing" ? null : state;
+  renderAll();
   events = new EventSource(`${routeWithRepo("/events", repo)}${repo ? "&" : "?"}token=${encodeURIComponent(actionToken)}`);
-  events.onmessage = (event) => renderState(JSON.parse(event.data));
+  events.onmessage = (event) => {
+    lastState = JSON.parse(event.data);
+    renderAll();
+  };
   events.onerror = () => log("conexión SSE perdida, reintentando…");
 }
 
