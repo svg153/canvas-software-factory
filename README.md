@@ -96,7 +96,29 @@ A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refu
 reopen it and `next` emits no further tasks. To run a new execution, re-`init` the
 repo with `--force` (see contract below).
 
-## Uso headless / multi-arnés
+### Headless quickstart (no Copilot App)
+
+```powershell
+# First init + start the factory, then run headless:
+node runner/sf.mjs init C:\path\to\repo --repo owner/name; node runner/sf.mjs start C:\path\to\repo
+node runner/sf-run.mjs C:\path\to\repo --harness codex [--model X] [--max-tasks 5] [--timeout 600] [--dry-run] [--yes]
+```
+
+Loop: `next` → adapter `run()` (cwd=repo) → report check → `complete` (or `complete --fail`
+with a note in `state.notes`) until no pending tasks, `--max-tasks`, or the factory is
+paused/done. Failed tasks are never retried within a run. Without `--yes` only read-only
+work orders (discover/plan/grill/review) run; `implement` tasks are listed as skipped.
+`--dry-run` prints the plan and spawns nothing. Ctrl+C leaves the task `awaiting_agent`.
+To revert work from a failed implement task: `git reset --hard <previous commit>` or
+discard the working branch.
+
+### Configuración de harness y modelo
+
+`sf.mjs init <repo> --repo o/r --harness codex --model X` guarda `harness`/`model` en
+`.software-factory/state.json`; `sf-run` los usa sin flags. Precedencia: **flags CLI > state.json > default**
+(`auto` = primer CLI disponible). Un harness o modelo inválido en config o flags falla de inmediato
+listando los ids válidos. El registro canónico (ids, binario, entrega del prompt, shim de Windows) vive
+**solo** en `runner/lib/harnesses.mjs`; `state.mjs` y `adapters/` lo importan.
 
 La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, OpenCode o Gemini CLI: instala el skill en el arnés, `sf.mjs init`, y alimenta el CLI con `sf.mjs next --print-prompt` (algunas piezas, en progreso). Matriz de CLIs, flags y quickstart en [docs/harnesses.md](docs/harnesses.md).
 
