@@ -5,7 +5,9 @@ export const HARNESSES = {
   copilot: { id: 'copilot', bin: 'copilot', base: ['-p'], model: ['--model'], stdin: true, headless: true, hint: 'npm i -g @github/copilot' },
   claude: { id: 'claude', bin: 'claude', base: ['-p', '--permission-mode', 'acceptEdits'], model: ['--model'], stdin: true, headless: true, hint: 'npm i -g @anthropic-ai/claude-code' },
   codex: { id: 'codex', bin: 'codex', base: ['exec', '--full-auto'], model: ['--model'], stdin: true, headless: true, hint: 'npm i -g @openai/codex' },
-  opencode: { id: 'opencode', bin: 'opencode', base: ['run'], model: ['-m'], stdin: false, headless: true, hint: 'npm i -g opencode-ai' },
+  // opencode >= 1.2.24 vuelve a leer el prompt de stdin (1.2.19-1.2.23 tenian una regresion).
+  // stdin en vez de argv: el shim .cmd de Windows rechaza prompts con espacios/comillas.
+  opencode: { id: 'opencode', bin: 'opencode', base: ['run'], model: ['-m'], stdin: true, headless: true, hint: 'npm i -g opencode-ai (prompt via stdin; requires >= 1.2.24)' },
   gemini: { id: 'gemini', bin: 'gemini', base: ['-p'], model: ['--model'], stdin: true, headless: true, hint: 'npm i -g @google/gemini-cli' },
   vscode: { id: 'vscode', headless: false, hint: 'VS Code has no headless agent CLI; use another harness.' },
 };

@@ -18,6 +18,32 @@ test('malicious model from state.json is rejected before any launch', async () =
   }
 });
 
+test('CMD_SAFE_ARG y MODEL_PATTERN: tabla compartida de casos', async () => {
+  const { CMD_SAFE_ARG } = await import('../lib/adapters/core.mjs');
+  const { MODEL_PATTERN } = await import('../lib/harnesses.mjs');
+  // [valor, CMD_SAFE_ARG (argv via cmd.exe), MODEL_PATTERN (id de modelo)]
+  const cases = [
+    ['gpt-5.6', true, true],
+    ['deepseek/v4.1-flash', true, true],
+    ['C:/bin/tool.cmd', true, true], // sin metacaracteres de shell: seguro en argv y como id (MODEL_PATTERN permite '/' p.ej. deepseek/v4.1-flash)
+    ['a=b', true, false], // '=' seguro en argv, no en un modelo
+    ['a@b', true, false],
+    ['a+b', true, false],
+    ['a,b', true, false],
+    ['-x', true, false], // flag legitimo en argv; un modelo nunca puede ser un flag
+    ['a b', false, false], // espacio: romperia el shim .cmd
+    ['a"b', false, false],
+    ['a&b', false, false],
+    ['a|b', false, false],
+    ['%PATH%', false, false],
+    ['a\nb', false, false],
+  ];
+  for (const [value, cmdOk, modelOk] of cases) {
+    assert.equal(CMD_SAFE_ARG.test(value), cmdOk, `CMD_SAFE_ARG('${value}')`);
+    assert.equal(MODEL_PATTERN.test(value), modelOk, `MODEL_PATTERN('${value}')`);
+  }
+});
+
 test('--harness auto does not override cfg.harness', () => {
   assert.equal(pickHarness('auto', 'codex'), 'codex');
   assert.equal(pickHarness('claude', 'codex'), 'claude');

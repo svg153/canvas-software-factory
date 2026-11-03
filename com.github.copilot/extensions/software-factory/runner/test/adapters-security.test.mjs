@@ -11,17 +11,33 @@ const adaptersDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 const PAYLOADS = ['x && calc.exe', '`calc`', 'a | b', '" & echo PWNED & "', '$(calc) > out.txt'];
 
-test('malicious prompt reaches argv literally (shell:false), never interpreted', async () => {
+test('malicious prompt reaches the harness literally (stdin), never interpreted', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sf57-'));
-  const script = path.join(dir, 'argv.mjs');
-  fs.writeFileSync(script, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
+  const script = path.join(dir, 'echo.mjs');
+  // Devuelve {argv, stdin}: opencode (stdin:true) recibe el prompt por stdin, no por argv;
+  // en cualquier caso debe llegar intacto, sin interpretacion de shell.
+  fs.writeFileSync(script, "let s='';process.stdin.on('data',(d)=>{s+=d;});process.stdin.on('end',()=>process.stdout.write(JSON.stringify({argv:process.argv.slice(2),stdin:s})));");
   try {
     for (const p of PAYLOADS) {
       const r = await get('opencode').run({ prompt: p, model: 'gpt-5.6', cwd: dir, command: { cmd: process.execPath, args: [script] } });
       assert.equal(r.ok, true, r.error);
-      assert.deepEqual(JSON.parse(r.output), ['run', '-m', 'gpt-5.6', p]);
+      const got = JSON.parse(r.output);
+      assert.deepEqual(got.argv, ['run', '-m', 'gpt-5.6']);
+      assert.equal(got.stdin, p);
     }
     assert.equal(fs.existsSync(path.join(dir, 'out.txt')), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('custom non-stdin spec still delivers the prompt as last argv', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sf57-'));
+  const script = path.join(dir, 'argv.mjs');
+  fs.writeFileSync(script, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
+  try {
+    const custom = createAdapter('copilot', { id: 'copilot', bin: 'legacy', base: ['run'], model: ['-m'], stdin: false, headless: true, hint: '' });
+    const r = await custom.run({ prompt: 'a b "c"', model: 'gpt-5.6', cwd: dir, command: { cmd: process.execPath, args: [script] } });
+    assert.equal(r.ok, true, r.error);
+    assert.deepEqual(JSON.parse(r.output), ['run', '-m', 'gpt-5.6', 'a b "c"']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

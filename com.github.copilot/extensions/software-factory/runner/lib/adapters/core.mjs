@@ -21,7 +21,15 @@ const liveChildren = new Set();
 export function killAllChildren() { for (const pid of liveChildren) killTree(pid); liveChildren.clear(); }
 
 export { MODEL_PATTERN };
+// Charsets con propositos distintos, NO unificados a proposito:
+// - CMD_SAFE_ARG valida argv arbitrario que atraviesa cmd.exe (shim .cmd de npm):
+//   permite = @ + , - (comunes en rutas y flags) pero jamas espacio, comillas ni
+//   metacaracteres; los flags legitimos empiezan por '-', asi que el guion inicial vale.
+// - MODEL_PATTERN (harnesses.mjs) valida SOLO ids de modelo y es mas estricto: arranca
+//   alfanumerico para que un model de state.json no pueda interpretarse como flag.
+// La tabla compartida de casos vive en test/harness-hardening.test.mjs.
 const CMD_SAFE_ARG = /^[A-Za-z0-9._:/\\\\=@+,-]+$/;
+export { CMD_SAFE_ARG };
 
 export function validateModel(model) {
   if (typeof model !== 'string' || !MODEL_PATTERN.test(model)) {

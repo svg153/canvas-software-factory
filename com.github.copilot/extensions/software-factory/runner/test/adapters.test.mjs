@@ -22,7 +22,7 @@ const expected = {
   copilot: { args: ['-p', '--model', 'm1'], stdin: true },
   claude: { args: ['-p', '--permission-mode', 'acceptEdits', '--model', 'm1'], stdin: true },
   codex: { args: ['exec', '--full-auto', '--model', 'm1'], stdin: true },
-  opencode: { args: ['run', '-m', 'm1', 'hello "x"'], stdin: false },
+  opencode: { args: ['run', '-m', 'm1'], stdin: true },
   gemini: { args: ['-p', '--model', 'm1'], stdin: true },
 };
 
