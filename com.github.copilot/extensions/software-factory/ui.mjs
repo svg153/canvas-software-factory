@@ -41,6 +41,66 @@ function issueHref(value) {
   }
 }
 
+export function renderGithub(result, doc = document) {
+  // Contenido no confiable (títulos de terceros): siempre textContent; enlaces solo https.
+  const issueList = doc.getElementById("ghIssues");
+  issueList.replaceChildren();
+  const issues = Array.isArray(result?.issues) ? result.issues : [];
+  if (!issues.length) {
+    appendEmpty(issueList, "Sin issues abiertas (pulsa «Actualizar GitHub»).", doc);
+  }
+  for (const issue of issues) {
+    const row = doc.createElement("div");
+    row.className = "issue";
+    const href = issueHref(issue.url);
+    const link = doc.createElement(href ? "a" : "span");
+    if (href) {
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    link.textContent = `#${String(issue.number ?? "")} ${String(issue.title ?? "")}`;
+    row.appendChild(link);
+    for (const label of Array.isArray(issue.labels) ? issue.labels : []) {
+      const chip = doc.createElement("span");
+      chip.className = "chip";
+      chip.textContent = String(label);
+      row.appendChild(chip);
+    }
+    issueList.appendChild(row);
+  }
+
+  const pullList = doc.getElementById("ghPulls");
+  pullList.replaceChildren();
+  const pulls = Array.isArray(result?.pulls) ? result.pulls : [];
+  if (!pulls.length) {
+    appendEmpty(pullList, "Sin PRs abiertos (pulsa «Actualizar GitHub»).", doc);
+  }
+  for (const pr of pulls) {
+    const row = doc.createElement("div");
+    row.className = "issue";
+    const href = issueHref(pr.url);
+    const link = doc.createElement(href ? "a" : "span");
+    if (href) {
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    link.textContent = `#${String(pr.number ?? "")} ${String(pr.title ?? "")}`;
+    row.appendChild(link);
+    const meta = doc.createElement("span");
+    meta.className = "chip";
+    const flags = [
+      pr.isDraft ? "draft" : "",
+      pr.mergeable === "CONFLICTING" ? "conflictos" : "",
+      pr.checks && pr.checks !== "none" ? pr.checks : "",
+    ].filter(Boolean);
+    meta.textContent = flags.join(" · ") || "abierto";
+    row.appendChild(meta);
+    pullList.appendChild(row);
+  }
+}
+
 export function renderState(state, doc = document) {
   const status = doc.getElementById("status");
   status.textContent = state?.status || "sin estado";

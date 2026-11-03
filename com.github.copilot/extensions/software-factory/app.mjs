@@ -1,4 +1,4 @@
-import { createInitPayload, renderState, routeWithRepo } from "/ui.mjs";
+import { createInitPayload, renderGithub, renderState, routeWithRepo } from "/ui.mjs";
 
 const params = new URLSearchParams(location.search);
 let repo = params.get("repo") || "";
@@ -29,6 +29,26 @@ async function action(actionName, input = {}) {
 document.getElementById("play").onclick = () => action("play");
 document.getElementById("pause").onclick = () => action("pause");
 document.getElementById("detectBtn").onclick = () => autofill();
+document.getElementById("ghBtn").onclick = () => refreshGithub();
+document.getElementById("importBtn").onclick = () => importExisting();
+
+// #90: ver el estado real del repo en GitHub (issues/PRs abiertos) y poder continuar
+// trabajo existente en lugar de empezar siempre de cero.
+async function refreshGithub() {
+  const result = await action("github_status");
+  if (result.error) return result;
+  renderGithub(result);
+  log(`github${result.slug ? ` (${result.slug})` : ""}: ${result.issues?.length ?? 0} issues abiertas, ${result.pulls?.length ?? 0} PRs${result.note ? ` — ${result.note}` : ""}`);
+  return result;
+}
+
+// Vincula las issues abiertas al run: la fase issues no las duplicará al crear.
+async function importExisting() {
+  const result = await action("import_issues");
+  if (result.error) return result;
+  log(`vinculadas ${result.imported} de ${result.open} issues abiertas (no se duplicarán al crear)`);
+  return result;
+}
 
 // #82/#83: rellena owner/repo desde el remote origin y el Project vinculado al repo.
 async function autofill() {

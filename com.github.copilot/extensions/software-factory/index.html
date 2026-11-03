@@ -37,6 +37,11 @@
   .task .t { flex:1; } .task .id { color:var(--mut); font-size:11px; }
   a { color:var(--run); text-decoration:none; } a:hover { text-decoration:underline; }
   .issue { padding:6px 0; border-bottom:1px dashed var(--line); }
+  .chip { display:inline-block; margin-left:6px; padding:1px 7px; border:1px solid var(--line); border-radius:999px; color:var(--mut); font-size:11px; }
+  .ghcols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:900px){ .ghcols{grid-template-columns:1fr;} }
+  .ghcols h3 { font-size:12px; color:var(--mut); margin:0 0 6px; font-weight:600; }
+  .ghlist { max-height:220px; overflow:auto; }
   .empty { color:var(--mut); font-style:italic; padding:8px 0; }
   #log { font-family:Consolas,monospace; font-size:12px; color:var(--mut); max-height:120px; overflow:auto; margin-top:16px; white-space:pre-wrap; }
   .init { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
@@ -87,6 +92,23 @@
     <button class="btn" id="ideaBtn">Añadir idea</button>
   </div>
   <div id="seeds" style="margin-top:10px"><div class="empty">Ninguna idea todavía.</div></div>
+</div>
+
+<div class="panel" style="margin-top:16px">
+  <h2>GitHub — trabajo existente (#90)
+    <button class="btn" id="ghBtn" style="float:right;padding:4px 12px;font-size:12px" title="Lee issues y PRs abiertos del repo en GitHub (gh issue/pr list). Solo lectura.">Actualizar GitHub</button>
+    <button class="btn" id="importBtn" style="float:right;margin-right:8px;padding:4px 12px;font-size:12px" title="Vincula las issues abiertas al run para que la fase «issues» no las duplique. Escribe en state.json.">Importar abiertas</button>
+  </h2>
+  <div class="ghcols">
+    <div>
+      <h3>Issues abiertas</h3>
+      <div id="ghIssues" class="ghlist"><div class="empty">Pulsa «Actualizar GitHub» para verlas.</div></div>
+    </div>
+    <div>
+      <h3>PRs abiertos</h3>
+      <div id="ghPulls" class="ghlist"><div class="empty">Pulsa «Actualizar GitHub» para verlos.</div></div>
+    </div>
+  </div>
 </div>
 
 <pre id="log"></pre>

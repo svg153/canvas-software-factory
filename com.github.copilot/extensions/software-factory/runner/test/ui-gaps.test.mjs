@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
+import { createInitPayload, renderGithub, renderState, routeWithRepo } from "../../ui.mjs";
 
 const extDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (name) => readFileSync(join(extDir, name), "utf8");
@@ -243,4 +243,82 @@ test("index.html: ids que usan app.mjs/ui.mjs, token CSRF y módulo", () => {
   for (const id of ids) assert.ok(html.includes(`id="${id}"`), id);
   assert.ok(html.includes('<meta name="sf-action-token" content="__SF_ACTION_TOKEN__"'));
   assert.ok(html.includes('<script type="module" src="/app.mjs">'));
+});
+
+// ---- #90: GitHub — trabajo existente ----
+
+test("renderGithub: contenido no confiable como texto y solo enlaces https", () => {
+  const doc = fakeDoc();
+  const evil = "<img src=x onerror=alert(1)>";
+  renderGithub({
+    issues: [
+      { number: 1, title: evil, url: "https://github.com/o/r/issues/1", labels: [evil, "bug"] },
+      { number: 2, title: "js", url: "javascript:alert(1)", labels: [] },
+    ],
+    pulls: [
+      { number: 3, title: "d", url: "https://github.com/o/r/pull/3", isDraft: true, mergeable: "CONFLICTING", checks: "fail" },
+      { number: 4, title: "bad", url: "no es url", isDraft: false, mergeable: "MERGEABLE", checks: "none" },
+    ],
+  }, doc);
+  const all = [...walk(doc.els.ghIssues), ...walk(doc.els.ghPulls)];
+  assert.ok(all.every((e) => !e.innerHTMLSet));
+  const rows = doc.els.ghIssues.children;
+  assert.equal(rows[0].children[0].tag, "a");
+  assert.equal(rows[0].children[0].rel, "noopener noreferrer");
+  assert.equal(rows[1].children[0].tag, "span");
+  assert.ok(doc.els.ghIssues.textContent.includes(evil));
+  const prs = doc.els.ghPulls.children;
+  assert.equal(prs[0].children[0].tag, "a");
+  assert.match(prs[0].children[1].textContent, /draft · conflictos · fail/);
+  assert.equal(prs[1].children[1].textContent, "abierto");
+});
+
+test("renderGithub: resultado vacío o nulo muestra estados vacíos", () => {
+  const doc = fakeDoc();
+  renderGithub(null, doc);
+  assert.match(doc.els.ghIssues.textContent, /Actualizar GitHub/);
+  assert.match(doc.els.ghPulls.textContent, /Actualizar GitHub/);
+  renderGithub({ issues: [], pulls: [] }, doc);
+  assert.match(doc.els.ghIssues.textContent, /Actualizar GitHub/);
+});
+
+test("app.mjs: ghBtn/importBtn llaman github_status/import_issues y registran el resultado", async () => {
+  const { els, calls } = await runApp({
+    fetchImpl: async (url, opts) => {
+      if (url.startsWith("/action")) {
+        const body = JSON.parse(opts.body);
+        if (body.actionName === "github_status") {
+          return { json: async () => ({ status: "github_status", slug: "o/r", issues: [{ number: 5, title: "Algo", url: "https://github.com/o/r/issues/5", labels: ["enhancement"] }], pulls: [{ number: 7, title: "PR", url: "https://github.com/o/r/pull/7", isDraft: false, mergeable: "MERGEABLE", checks: "pass" }], note: "" }) };
+        }
+        if (body.actionName === "import_issues") {
+          return { json: async () => ({ status: "import_issues", imported: 3, open: 5 }) };
+        }
+        return { json: async () => ({ status: "ok" }) };
+      }
+      return { json: async () => ({ status: "running", phase: "plan" }) };
+    },
+  });
+  // Sin auto-refresh al cargar: la primera llamada sigue siendo /state.
+  assert.equal(calls[0].url, "/state");
+  await els.ghBtn.onclick();
+  assert.deepEqual(JSON.parse(calls.at(-1).opts.body), { actionName: "github_status", input: {} });
+  assert.match(els.ghIssues.textContent, /#5 Algo/);
+  assert.match(els.ghPulls.textContent, /#7 PR/);
+  assert.match(els.log.textContent, /1 issues abiertas, 1 PRs/);
+  await els.importBtn.onclick();
+  assert.deepEqual(JSON.parse(calls.at(-1).opts.body), { actionName: "import_issues", input: {} });
+  assert.match(els.log.textContent, /vinculadas 3 de 5/);
+});
+
+test("extension.mjs: ramas github_status/import_issues (#90)", () => {
+  const src = read("extension.mjs");
+  for (const name of ["github_status", "import_issues"]) {
+    assert.ok(src.includes(`name: "${name}"`), name);
+    assert.ok(src.includes(`actionName === "${name}"`), name);
+  }
+  assert.match(src, /getGithubStatus\(slug\)/);
+  assert.match(src, /importOpenIssues\(state, \{/);
+  assert.match(src, /saveState\(repoDir, state\)/);
+  // El fallo de importación se traduce a mensaje fijo: nada del estado del run al exterior.
+  assert.match(src, /no se pudieron vincular las issues/);
 });

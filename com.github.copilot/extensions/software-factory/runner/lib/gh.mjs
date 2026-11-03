@@ -40,10 +40,16 @@ export function validateInitInputs({ repo = "", project = "", projectOwner = "" 
 const PROJECTS_V2_QUERY =
   "query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ projectsV2(first:10){ nodes{ number title owner{ __typename ... on User { login } ... on Organization { login } } } } } }";
 
-export function projectsV2Args(slug) {
+// Un slug con "-" inicial en el nombre sería parseado por gh como un flag: se rechaza
+// antes de construir cualquier args (--repo, issue list, pr list comparten criterio).
+function assertRepoSlug(slug) {
   if (typeof slug !== "string" || !REPO_RE.test(slug) || slug.split("/")[1].startsWith("-")) {
     throw new Error(`slug de repo inválido: ${JSON.stringify(slug)}`);
   }
+}
+
+export function projectsV2Args(slug) {
+  assertRepoSlug(slug);
   const [owner, name] = slug.split("/");
   return ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `query=${PROJECTS_V2_QUERY}`];
 }
@@ -64,6 +70,110 @@ export function parseProjectsV2(stdout) {
 
 export async function listLinkedProjects(slug, { runGh = gh } = {}) {
   return parseProjectsV2(await runGh(projectsV2Args(slug)));
+}
+
+// ---- #90: estado real del repo en GitHub (issues/PRs abiertos) ----
+
+export function openIssuesArgs(slug) {
+  assertRepoSlug(slug);
+  return ["issue", "list", "--repo", slug, "--state", "open", "--limit", "200",
+    "--json", "number,title,url,labels"];
+}
+
+export function openPullsArgs(slug) {
+  assertRepoSlug(slug);
+  return ["pr", "list", "--repo", slug, "--state", "open", "--limit", "200",
+    "--json", "number,title,url,isDraft,mergeable,headRefName,statusCheckRollup"];
+}
+
+// gh devuelve basura si falla de forma inesperada: nunca lanzamos, devolvemos [].
+export function parseIssueList(stdout) {
+  let data;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(data)) return [];
+  return data
+    .filter((n) => Number.isFinite(Number(n?.number)) && n?.title != null)
+    .map((n) => ({
+      number: Number(n.number),
+      title: String(n.title),
+      url: String(n.url ?? ""),
+      labels: (Array.isArray(n.labels) ? n.labels : [])
+        .map((l) => String(l?.name ?? ""))
+        .filter(Boolean),
+    }));
+}
+
+// statusCheckRollup → "fail" | "pending" | "pass" | "none" (lo esencial para decidir
+// si un PR es mezclable de hecho; el detalle queda en GitHub).
+function summarizeChecks(rollup) {
+  if (!Array.isArray(rollup) || rollup.length === 0) return "none";
+  const states = rollup.map((c) => String(c?.state ?? c?.status ?? "").toUpperCase());
+  if (states.some((s) => ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED"].includes(s))) return "fail";
+  if (states.some((s) => ["PENDING", "IN_PROGRESS", "QUEUED", ""].includes(s))) return "pending";
+  return "pass";
+}
+
+export function parsePullList(stdout) {
+  let data;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(data)) return [];
+  return data
+    .filter((n) => Number.isFinite(Number(n?.number)) && n?.title != null)
+    .map((n) => ({
+      number: Number(n.number),
+      title: String(n.title),
+      url: String(n.url ?? ""),
+      isDraft: Boolean(n.isDraft),
+      mergeable: String(n.mergeable ?? "UNKNOWN"),
+      head: String(n.headRefName ?? ""),
+      checks: summarizeChecks(n.statusCheckRollup),
+    }));
+}
+
+// Blando por diseño: un fallo parcial (auth, rate limit) no vacía la otra lista;
+// se devuelve una nota cortada (los errores de gh mencionan el slug, nunca rutas locales).
+export async function getGithubStatus(slug, { runGh = gh } = {}) {
+  const out = { issues: [], pulls: [], note: "" };
+  const notes = [];
+  try {
+    out.issues = parseIssueList(await runGh(openIssuesArgs(slug)));
+  } catch (e) {
+    notes.push(`issues: ${String(e.message).slice(0, 120)}`);
+  }
+  try {
+    out.pulls = parsePullList(await runGh(openPullsArgs(slug)));
+  } catch (e) {
+    notes.push(`pulls: ${String(e.message).slice(0, 120)}`);
+  }
+  out.note = notes.join("; ");
+  return out;
+}
+
+// Vincula las issues abiertas en GitHub al estado del run (state.issues) para que la
+// fase issues no las duplique: createIssuesFromDraft ya deduce contra state.issues (sameIssue).
+// Solo escribe si hay novedades; devuelve {imported, open}.
+export async function importOpenIssues(state, { runGh = gh, persistState = async () => {} } = {}) {
+  const slug = repoSlug(state);
+  const list = parseIssueList(await runGh(openIssuesArgs(slug)));
+  if (!Array.isArray(state.issues)) state.issues = [];
+  const known = [...state.issues];
+  let imported = 0;
+  for (const it of list) {
+    if (known.some((k) => sameIssue(k, it))) continue;
+    state.issues.push({ title: it.title, url: it.url, number: it.number, at: new Date().toISOString(), imported: true });
+    known.push(it);
+    imported += 1;
+  }
+  if (imported > 0) await persistState();
+  return { imported, open: list.length };
 }
 
 export function projectItemAddArgs(state, url) {
