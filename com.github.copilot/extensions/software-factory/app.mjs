@@ -59,6 +59,13 @@ document.getElementById("initBtn").onclick = () => action("init", createInitPayl
   rounds: Number(document.getElementById("rounds").value) || 3,
   force: document.getElementById("forceInit")?.checked,
 }));
+document.getElementById("ideaBtn").onclick = async () => {
+  const input = document.getElementById("ideaText");
+  const idea = input.value.trim();
+  if (!idea) { log("⚠ escribe una idea antes de pulsar Añadir idea"); return; }
+  const result = await action("add_idea", { idea });
+  if (!result.error) input.value = "";
+};
 
 function showRepoPath(text) {
   const repoPathEl = document.getElementById("repopath");

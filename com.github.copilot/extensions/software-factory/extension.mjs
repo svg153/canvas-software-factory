@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
 import { createFactoryServer } from "./runner/lib/http.mjs";
 import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
-import { initRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
+import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
 import { updateState } from "./runner/lib/state.mjs";
 import { deriveGithubRepo } from "./runner/lib/git.mjs";
@@ -123,6 +123,12 @@ async function applyAction(repoDir, actionName, input = {}) {
       out.note = "el repo no tiene remote origin en github.com";
     }
     return out;
+  }
+  if (actionName === "idea") {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const out = await promisify(execFile)("node", [RUNNER, ...ideaRunnerArgs(repoDir, input)], { windowsHide: true });
+    return JSON.parse(out.stdout.trim());
   }
   if (actionName === "next") {
     const { execFile } = await import("node:child_process");
@@ -241,6 +247,23 @@ const factoryCanvas = createCanvas({
           project_owner: input?.project_owner,
           rounds: input?.rounds,
         });
+      },
+    },
+    {
+      name: "add_idea",
+      description:
+        "Guarda una idea del usuario como semilla (vocal idea). La próxima fase plan la descompone en 1 o más issues (origin:user) que pasan por grill/issues/Project/implement/review igual que las de la auditoría; no lanza un round propio.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+          idea: { type: "string", description: "Texto de la idea del usuario." },
+        },
+        required: ["idea"],
+      },
+      handler({ input }) {
+        const repoDir = input?.repo || session?.workspacePath || process.cwd();
+        return applyAction(repoDir, "idea", { idea: input?.idea });
       },
     },
     {

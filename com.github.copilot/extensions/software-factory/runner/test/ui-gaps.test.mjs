@@ -227,7 +227,10 @@ test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas"
   assert.match(src, /throw Object\.assign\(new CanvasError\("sf_init_fallo", detail\)/);
   assert.match(src, /startGuardError\(await readState\(repoDir\)\)/);
   assert.match(src, /throw new CanvasError\("sf_unknown_action"/);
-  assert.equal((src.match(/windowsHide: true/g) || []).length, 2);
+  // Todo spawn del runner debe ocultar la consola: windowsHide en cada sitio execFile.
+  const execSites = (src.match(/promisify\(execFile\)\(/g) || []).length;
+  assert.ok(execSites >= 2, "debe haber llamadas a execFile");
+  assert.equal((src.match(/windowsHide: true/g) || []).length, execSites);
   assert.match(src, /setInterval\([\s\S]*2500\)/);
   assert.match(src, /clearInterval\(timer\)/);
   assert.match(src, /server\.listen\(0, "127\.0\.0\.1"/);

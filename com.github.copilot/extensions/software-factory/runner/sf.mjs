@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
-  loadState, saveState, defaultState, logEvent, paths,
+  loadState, saveState, defaultState, logEvent, paths, nowIso,
   newTask, writeWorkOrder, openTasks, failedTasks, unclaimedIssues, hasResult, PHASES,
 } from "./lib/state.mjs";
 import {
@@ -102,6 +102,34 @@ async function cmdInit() {
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
   console.log(JSON.stringify({ ok: true, sf: paths(repoPath).root, state: "idle" }, null, 2));
+}
+
+// Idea del usuario ("vocal idea"): se guarda como semilla y la próxima fase plan la
+// descompone en 1+ issues del draft (origin:user). No lanza un round por sí sola:
+// viaja encajada en los rounds existentes.
+async function cmdIdea() {
+  const state = need(await loadState(repoPath));
+  const text = (rest[0] || "").trim();
+  if (!text) {
+    console.error('Idea vacía. Uso: node sf.mjs idea <repo> "texto de la idea"');
+    process.exit(1);
+  }
+  state.seeds = state.seeds || [];
+  const seed = {
+    id: `seed${state.seeds.length + 1}`,
+    text,
+    origin: "user",
+    round_added: state.round,
+    status: "new", // new -> planned (sale de plan) -> triaged (sale de grill)
+    created_at: nowIso(),
+  };
+  state.seeds.push(seed);
+  await logEvent(repoPath, `idea seed ${seed.id} (round ${state.round}): ${text.slice(0, 80)}`);
+  await saveState(repoPath, state);
+  console.log(JSON.stringify(
+    { ok: true, seed, note: "la próxima fase plan la materializará en 1 o más issues" },
+    null, 2,
+  ));
 }
 
 async function cmdStatus() {
@@ -211,6 +239,21 @@ async function advance(state, { dryRun = isDryRun() } = {}) {
     }
     return preview;
   }
+  // Semillas de usuario: al salir de plan, las "new" que ya existían cuando se emitió
+  // el work order de plan pasan a "planned" (una idea añadida a mitad de round no se
+  // marca como consumida: espera a la próxima fase plan). Al salir de grill, "planned"
+  // -> "triaged" (ya superó la autocrítica). La deduplicación por título en la fase
+  // issues evita duplicados si una idea llegara a re-planificarse.
+  if (work.phase === "plan") {
+    const planTask = (work.tasks || []).find((t) => t.phase === "plan" && t.round === work.round);
+    const cutoff = planTask?.created_at;
+    for (const s of work.seeds || []) {
+      if (s.status === "new" && (!cutoff || s.created_at <= cutoff)) s.status = "planned";
+    }
+  }
+  if (work.phase === "grill") {
+    for (const s of work.seeds || []) if (s.status === "planned") s.status = "triaged";
+  }
   const idx = PHASES.indexOf(work.phase);
   work.phase = PHASES[idx + 1] || PHASES[0];
   preview.to = work.phase; preview.advanced = true;
@@ -291,6 +334,7 @@ async function main() {
   }
   switch (cmd) {
     case "init": return cmdInit();
+    case "idea": return cmdIdea();
     case "status": return cmdStatus();
     case "next": return cmdNext();
     case "complete": return cmdComplete();
@@ -308,6 +352,9 @@ async function main() {
 Comandos:
   init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--force]
       (sin --force no toca un estado existente; reiniciar es decision explicita)
+  idea <repo> "texto"  (guarda una idea del usuario como semilla; la proxima fase plan
+      la descompone en 1+ issues origin:user que pasan por grill/issues/implement igual
+      que las de la auditoria; no lanza un round propio)
   start|pause|status|next <repo>
   complete <repo> <taskId> [--fail|--force]
       (done exige informe no vacio en result_file; --force es la alternativa explicita)

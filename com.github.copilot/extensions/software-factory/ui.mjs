@@ -129,4 +129,24 @@ export function renderState(state, doc = document) {
   } else {
     appendEmpty(issueList, "Ninguna todavía.", doc);
   }
+
+  // Ideas del usuario (semillas). Se muestra solo si el contenedor existe: los tests
+  // de render usan un doc mínimo sin este id y no deben romperse.
+  const seedList = doc.getElementById("seeds");
+  if (seedList) {
+    seedList.replaceChildren();
+    const seeds = Array.isArray(state?.seeds) ? state.seeds : [];
+    if (seeds.length) {
+      for (const seed of seeds) {
+        const row = doc.createElement("div");
+        row.className = "issue";
+        const label = doc.createElement("span");
+        label.textContent = `[${String(seed.status ?? "new")}] ${String(seed.text ?? "")}`;
+        row.appendChild(label);
+        seedList.appendChild(row);
+      }
+    } else {
+      appendEmpty(seedList, "Ninguna idea todavía.", doc);
+    }
+  }
 }
