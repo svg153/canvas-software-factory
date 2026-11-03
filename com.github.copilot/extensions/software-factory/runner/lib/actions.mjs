@@ -12,5 +12,7 @@ export function initRunnerArgs(repoDir, input = {}) {
   if (input.project) args.push("--project", input.project);
   if (input.project_owner) args.push("--project-owner", input.project_owner);
   if (input.rounds) args.push("--rounds", String(input.rounds));
+  // #88: reinicio explícito desde el canvas; el runner exige --force para pisar estado.
+  if (input.force) args.push("--force");
   return args;
 }

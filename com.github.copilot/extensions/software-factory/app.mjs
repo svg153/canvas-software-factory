@@ -20,8 +20,9 @@ async function action(actionName, input = {}) {
     body: JSON.stringify({ actionName, input }),
   });
   const result = await response.json();
-  if (result.error) log(`⚠ ${result.error}`);
+  if (result.error) log(`⚠ ${result.error}${result.message ? `: ${result.message}` : ""}`);
   else log(`✔ ${result.status || JSON.stringify(result).slice(0, 120)}`);
+  if (result.needs_force) log(`el repo ya tiene estado: marca «Forzar reinicio» y vuelve a pulsar Init solo si quieres perder el progreso`);
   return result;
 }
 
@@ -56,6 +57,7 @@ document.getElementById("initBtn").onclick = () => action("init", createInitPayl
   project: document.getElementById("project").value,
   projectOwner: document.getElementById("projectOwner").value,
   rounds: Number(document.getElementById("rounds").value) || 3,
+  force: document.getElementById("forceInit")?.checked,
 }));
 
 function showRepoPath(text) {

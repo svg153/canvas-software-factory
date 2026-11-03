@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.1.5
+
+### Fixed
+- Init sobre un repo con estado existente mostraba solo `⚠ sf_solicitud_fallida` (#88):
+  el runner aborta con «Ya existe estado… usa --force» pero ese mensaje se perdía. Ahora
+  la rama init de `extension.mjs` captura el fallo y, si pide `--force`, devuelve un aviso
+  accionable (`needs_force`); si no, lanza `sf_init_fallo` con el detalle del runner.
+- `http.mjs` difunde el `code` y `message` de los errores intencionales (CanvasError), pero
+  mantiene el código genérico sin mensaje para errores crudos (no se filtran rutas internas).
+- Nuevo checkbox «Forzar reinicio» junto a Init: añade `--force` al runner (`initRunnerArgs` +
+  `createInitPayload`, que solo incluye `force` cuando está marcado para no alterar el contrato).
+
+### Changed
+- `app.mjs` registra `⚠ <code>: <message>` y, ante `needs_force`, sugiere marcar «Forzar reinicio».
+
 ## v0.1.4
 
 ### Fixed

@@ -98,8 +98,16 @@ async function applyAction(repoDir, actionName, input = {}) {
   if (actionName === "init") {
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, ...initRunnerArgs(repoDir, input)], { windowsHide: true });
-    return { status: "inicializado", output: out.stdout.trim() };
+    try {
+      const out = await promisify(execFile)("node", [RUNNER, ...initRunnerArgs(repoDir, input)], { windowsHide: true });
+      return { status: "inicializado", output: out.stdout.trim() };
+    } catch (e) {
+      // #88: el runner aborta exit 1 con un mensaje accionable (p. ej. estado existente
+      // sin --force). Sin este catch el usuario solo veía el código genérico.
+      const detail = String(e.stderr || e.stdout || e.message || "").trim().split("\n").filter(Boolean).join(" ").slice(0, 300);
+      if (/--force/.test(detail)) return { status: "aviso", needs_force: true, message: detail };
+      throw Object.assign(new CanvasError("sf_init_fallo", detail), { code: "sf_init_fallo", message: detail });
+    }
   }
   if (actionName === "autofill") {
     // #82/#83: derivar owner/repo del remote y detectar el Project vinculado.
