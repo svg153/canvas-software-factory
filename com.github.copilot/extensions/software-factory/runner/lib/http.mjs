@@ -31,14 +31,17 @@ export function createFactoryServer({
   allowHosts = [],
 }) {
   const allowed = new Set([...LOOPBACK_HOSTS, ...allowHosts.map((h) => h.toLowerCase())]);
+  // Host sin puerto (proxy/port-forward que reescribe cabeceras): el control real es la
+  // allowlist de hostname, asi que el puerto solo se exige cuando el cliente lo envia.
   const hostAllowed = (hostHeader, port) => {
     const m = typeof hostHeader === "string" ? hostHeader.match(/:(\d{1,5})$/) : null;
-    return allowed.has(hostnameOf(hostHeader)) && Number(m ? m[1] : 80) === port;
+    return allowed.has(hostnameOf(hostHeader)) && (m === null || Number(m[1]) === port);
   };
   const originAllowed = (origin, port) => {
     try {
       const u = new URL(origin);
-      return u.protocol === "http:" && allowed.has(u.hostname.toLowerCase()) && Number(u.port || 80) === port;
+      // Mismo criterio que hostAllowed: Origin sin puerto (default :80 tras proxy) vale por hostname.
+      return u.protocol === "http:" && allowed.has(u.hostname.toLowerCase()) && (u.port === "" || Number(u.port) === port);
     } catch {
       return false;
     }
@@ -71,7 +74,12 @@ export function createFactoryServer({
         const fetchSite = req.headers["sec-fetch-site"];
         const ua = String(req.headers["user-agent"] || "");
         const looksLikeBrowser = /Mozilla\/5\.0/.test(ua) && /(Chrome|Safari|Firefox)\//.test(ua);
-        if (fetchSite === "cross-site" || (!fetchSite && looksLikeBrowser)) return deny(res, 403, "sf_origen_no_permitido");
+        // Defensa en profundidad: un navegador real envia Sec-Fetch-Site; si falta y parece
+        // navegador, solo se acepta con Origin valido (validado arriba). Contrato: clientes
+        // sin Sec-Fetch-Site (webviews antiguos, proxies que recortan cabeceras) deben enviar
+        // Origin valido o no parecer navegador; la UA es falsificable, esto no es la frontera.
+        if (fetchSite === "cross-site") return deny(res, 403, "sf_origen_no_permitido");
+        if (!fetchSite && looksLikeBrowser && !req.headers.origin) return deny(res, 403, "sf_origen_no_permitido");
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify({ token: actionToken }));
         return;

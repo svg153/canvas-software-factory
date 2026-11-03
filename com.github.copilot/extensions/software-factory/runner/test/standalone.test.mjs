@@ -129,7 +129,27 @@ test("Origin con otro puerto, /token con Sec-Fetch/UA y resolveRepo real", async
     const browserUa = "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120.0 Safari/537.36";
     assert.equal(await raw(srv.url, { path: "/token", headers: { "sec-fetch-site": "same-origin", "user-agent": browserUa } }), 200);
     assert.equal(await raw(srv.url, { path: "/token", headers: { "user-agent": browserUa } }), 403);
+    // Webview legitimo: UA de navegador sin Sec-Fetch-Site pero con Origin valido => 200.
+    assert.equal(await raw(srv.url, { path: "/token", headers: { "user-agent": browserUa, origin: `http://127.0.0.1:${port}` } }), 200);
     assert.equal(await raw(srv.url, { path: "/token", headers: { "user-agent": "curl/8.0" } }), 200);
+    // IPv6 loopback en Host y Origin.
+    assert.equal(await raw(srv.url, { path: "/token", headers: { host: `[::1]:${port}` } }), 200);
+    assert.equal(await raw(srv.url, { path: "/state", headers: { host: `[::1]:${port}`, "x-sf-token": token } }), 200);
+    // Host sin puerto (proxy/port-forward que reescribe cabeceras): vale por hostname.
+    assert.equal(await raw(srv.url, { path: "/token", headers: { host: "127.0.0.1" } }), 200);
+    assert.equal(await raw(srv.url, { path: "/token", headers: { host: "evil.example" } }), 403);
+    // resolveRepo real: junction DENTRO del repo se resuelve por realpath y se acepta
+    // (la que apunta fuera se rechaza con 400 en el test de arriba).
+    await mkdir(join(repo, "real"), { recursive: true });
+    let linked = true;
+    try {
+      await symlink(join(repo, "real"), join(repo, "inner"), "junction");
+    } catch {
+      linked = false;
+    }
+    if (linked) {
+      assert.equal(await raw(srv.url, { path: `/state?repo=${encodeURIComponent(join(repo, "inner"))}`, headers: { "x-sf-token": token } }), 200);
+    }
     const { realpathSync } = await import("node:fs");
     const state = await (await fetch(`${srv.url}/state?repo=${encodeURIComponent(repo)}`, { headers: { "x-sf-token": token } })).json();
     assert.ok(state);
