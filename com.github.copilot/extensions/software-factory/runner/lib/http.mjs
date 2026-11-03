@@ -22,6 +22,7 @@ export function createFactoryServer({
   ensureWatch,
   applyAction,
   subscribe,
+  resolveRepo,
 }) {
   const actionToken = randomBytes(24).toString("hex");
   const tokenOk = (header) => {
@@ -31,7 +32,8 @@ export function createFactoryServer({
   return createServer(async (req, res) => {
     try {
       const requestUrl = new URL(req.url, "http://127.0.0.1");
-      const repoDir = requestUrl.searchParams.get("repo") || defaultRepo();
+      const requestedRepo = requestUrl.searchParams.get("repo");
+      const repoDir = resolveRepo ? resolveRepo(requestedRepo || defaultRepo()) : requestedRepo || defaultRepo();
       const path = requestUrl.pathname;
 
       if (req.method === "GET" && path === "/") {
@@ -68,6 +70,12 @@ export function createFactoryServer({
         if (!tokenOk(req.headers[ACTION_TOKEN_HEADER])) {
           res.writeHead(403, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "sf_csrf_token_invalido" }));
+          return;
+        }
+        const origin = req.headers.origin;
+        if (origin && new URL(origin).host !== req.headers.host) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "sf_origen_no_permitido" }));
           return;
         }
         const body = await readJsonBody(req);

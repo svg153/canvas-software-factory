@@ -292,6 +292,12 @@ async function main() {
     process.exit(2);
   }
   switch (cmd) {
+    case "serve": {
+      const { startStandalone } = await import("./server.mjs");
+      const { url, repo } = await startStandalone(["--repo", repoPath, ...rest]);
+      console.log(`Software Factory panel: ${url}/ (repo ${repo})`);
+      return;
+    }
     case "init": return cmdInit();
     case "status": return cmdStatus();
     case "next": return cmdNext();
@@ -311,6 +317,7 @@ Comandos:
   init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--harness copilot|claude|codex|opencode|gemini|vscode] [--model id] [--force]
       (sin --force no toca un estado existente; reiniciar es decision explicita)
   start|pause|status|next <repo>
+  serve <repo> [--port N] [--allow-repo <ruta>]  (panel web standalone, alias de runner/server.mjs)
   complete <repo> <taskId> [--fail|--force]
       (done exige informe no vacio en result_file; --force es la alternativa explicita)
   issues <repo> [--dry|--dry-run]  (crea issues del draft + añade al Project; la simulacion
