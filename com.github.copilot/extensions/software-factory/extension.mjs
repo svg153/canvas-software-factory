@@ -7,6 +7,8 @@ import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
 import { RUNNER } from "./runner/lib/service.mjs";
 
+let session;
+
 const defaultRepo = () => session?.workspacePath || process.cwd();
 const allowlist = createRepoAllowlist({ defaultRepo });
 // El host de extensiones no es una sesión de chat: su cwd/workspacePath no es un repo.
