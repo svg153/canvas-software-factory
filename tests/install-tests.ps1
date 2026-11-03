@@ -230,6 +230,56 @@ It "aborta si falta tools/make-canvas-manifest.mjs y no escribe nada" {
   }
 }
 
+Write-Host "`n== sf-install.mjs (--home temporal) =="
+$SfInstall = Join-Path $RepoRoot "tools\sf-install.mjs"
+It "sf-install: install copilot y --check pasa" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness copilot --home $h | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "install fallo"
+    Assert-True (Test-Path (Join-Path $h ".copilot\skills\software-factory\SKILL.md")) "falta SKILL.md"
+    Assert-True (Test-Path (Join-Path $h ".copilot\skills\software-factory\runner\sf.mjs")) "falta runner"
+    & node $SfInstall --harness copilot --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "--check deberia pasar"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: marcador alterado -> --check falla con exit 1" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness claude --home $h | Out-Null
+    $m = Join-Path $h ".claude\skills\software-factory\.sf-install.json"
+    (Get-Content $m -Raw).Replace('"version": "', '"version": "0.0.0-old') | Set-Content $m
+    & node $SfInstall --harness claude --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 1) "--check deberia devolver 1, devolvio $LASTEXITCODE"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: --dry-run no escribe nada" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness opencode --home $h --dry-run | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "dry-run fallo"
+    Assert-True (@(Get-ChildItem -Recurse -Force $h).Count -eq 0) "dry-run escribio archivos"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: generic es idempotente y conserva contenido de AGENTS.md" {
+  $h = New-TempHome
+  try {
+    Set-Content (Join-Path $h "AGENTS.md") "# mio"
+    & node $SfInstall --harness generic --home $h | Out-Null
+    & node $SfInstall --harness generic --home $h | Out-Null
+    $t = Get-Content (Join-Path $h "AGENTS.md") -Raw
+    Assert-True ($t -match '# mio') "contenido previo perdido"
+    Assert-True (([regex]::Matches($t, 'BEGIN software-factory')).Count -eq 1) "bloque duplicado"
+    & node $SfInstall --harness generic --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "--check generic deberia pasar"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: rutas por arnes" {
+  $out = & node --input-type=module -e "import {targetsFor} from './tools/sf-install.mjs'; console.log(JSON.stringify(['copilot','claude','codex','opencode'].map(h=>targetsFor(h,'/h').skillDir.replace(/\\\\/g,'/'))))"
+  $out = $out.Replace('\\','/')
+  Assert-True ($out -match '/h/.copilot/skills/software-factory' -and $out -match '/h/.config/opencode/skill/software-factory' -and $out -match '.codex/skills' -and $out -match '.claude/skills') "rutas incorrectas: $out"
+}
+
 Write-Host "`n== Resultado =="
 Write-Host "Pasadas: $script:Passed | Fallidas: $script:Failed"
 if ($script:Failed -gt 0) {
