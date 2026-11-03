@@ -74,7 +74,8 @@
       <button class="btn" id="detectBtn" title="Detectar owner/repo desde git remote origin y el Project vinculado al repo (gh api)">Detectar</button>
       <input id="projectOwner" placeholder="Project owner (opc.)" size="18" title="Usuario u organización dueña del Project. Por defecto: el owner del repo." />
       <input id="rounds" placeholder="rounds" size="6" value="3" title="Número de rounds del bucle" />
-      <button class="btn" id="initBtn">Init</button>
+      <label title="Sobrescribe el estado existente de .software-factory al hacer Init: perderás el progreso (tareas, issues, fase actual)."><input type="checkbox" id="forceInit" style="margin-right:4px" />Forzar reinicio</label>
+<button class="btn" id="initBtn">Init</button>
     </div>
   </div>
 </div>

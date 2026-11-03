@@ -45,6 +45,18 @@ test("createInitPayload usa claves del contrato init (repo = owner/repo de GitHu
   );
 });
 
+test("#88: createInitPayload añade force solo cuando está marcado", () => {
+  assert.deepEqual(
+    createInitPayload({ repo: "o/r", project: "5", projectOwner: "me", rounds: 2, force: true }),
+    { repo: "o/r", project: "5", project_owner: "me", rounds: 2, force: true },
+  );
+  assert.deepEqual(
+    createInitPayload({ repo: "o/r", project: "5", projectOwner: "me", rounds: 2, force: false }),
+    { repo: "o/r", project: "5", project_owner: "me", rounds: 2 },
+  );
+  assert.equal("force" in createInitPayload({ repo: "o/r", project: "", projectOwner: "", rounds: 3 }), false);
+});
+
 test("routeWithRepo codifica el repo y omite query vacía", () => {
   assert.equal(routeWithRepo("/state", ""), "/state");
   assert.equal(routeWithRepo("/state", "C:\\a b&c"), `/state?repo=${encodeURIComponent("C:\\a b&c")}`);
@@ -210,6 +222,9 @@ test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas"
   assert.match(src, /const repoDir = repoFrom\(input\)/);
   assert.match(src, /const repoFrom = \(input\) => allowlist\.resolve\(input\?\.repo\)/);
   assert.match(src, /initRunnerArgs\(repoDir, input\)/);
+  // #88: la rama init captura el exit 1 del runner y lo traduce (aviso needs_force o CanvasError).
+  assert.match(src, /if \(\/--force\/\.test\(detail\)\) return \{ status: "aviso", needs_force: true, message: detail \}/);
+  assert.match(src, /throw Object\.assign\(new CanvasError\("sf_init_fallo", detail\)/);
   assert.match(src, /startGuardError\(await readState\(repoDir\)\)/);
   assert.match(src, /throw new CanvasError\("sf_unknown_action"/);
   assert.equal((src.match(/windowsHide: true/g) || []).length, 2);
