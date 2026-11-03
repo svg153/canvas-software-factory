@@ -1,7 +1,8 @@
 // Adapter that really spawns a long-running child through core.mjs (exercises tree kill).
 import { writeFileSync } from "node:fs";
-import { createAdapter } from "../lib/adapters/core.mjs";
+import { createAdapter, registerHarness } from "../lib/adapters/core.mjs";
 
+registerHarness("hang", { bin: "node", base: [], model: [], stdin: false, hint: "n/a" });
 const real = createAdapter("hang", { bin: "node", base: [], model: [], stdin: false, hint: "n/a" });
 export default {
   id: "hang",
