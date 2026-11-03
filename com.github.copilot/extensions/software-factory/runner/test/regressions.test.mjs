@@ -1635,8 +1635,9 @@ test("crash mid-write leaves state.json parseable and writeWorkOrder is atomic",
   assert.equal(await readFile(task.prompt_file, "utf8"), "# orden\n");
   const src = await readFile(join(extensionDir, "runner", "lib", "state.mjs"), "utf8");
   assert.match(src, /atomicWrite\(task\.prompt_file/);
+  });
 
-// ---------- Ingesta del repo (continuar un repo "a medias") ----------
+  // ---------- Ingesta del repo (continuar un repo "a medias") ----------
 
 function makeRunGh(canned, calls = []) {
   return async (args) => {
@@ -1850,4 +1851,3 @@ test("canvas and UI wire run_intake to the intake action and render inventory", 
   const emptyDoc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "inventory"]);
   renderState({ status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [], inventory: null }, emptyDoc);
   });
-});
