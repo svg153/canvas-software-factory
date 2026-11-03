@@ -98,7 +98,7 @@ repo with `--force` (see contract below).
 
 ## Uso headless / multi-arnés
 
-La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, OpenCode o Gemini CLI: instala el skill en el arnés, `sf.mjs init`, y alimenta el CLI con `sf.mjs next --print-prompt` (algunas piezas, en progreso). Matriz de CLIs, flags y quickstart en [docs/harnesses.md](docs/harnesses.md).
+La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, OpenCode o Gemini CLI: instala el skill en el arnés, `sf.mjs init`, y alimenta el CLI con `sf.mjs next --print-prompt` (algunas piezas, en progreso). Matriz de CLIs, flags y quickstart en [docs/harnesses.md](docs/harnesses.md). Orden de merge del tren de PRs abiertos en [docs/merge-order.md](docs/merge-order.md).
 
 ## Runner contract (v2 semantics)
 
