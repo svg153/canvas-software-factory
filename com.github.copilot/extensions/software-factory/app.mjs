@@ -9,13 +9,13 @@ function log(message) {
   element.scrollTop = element.scrollHeight;
 }
 
-// Token CSRF expuesto por el servidor en el HTML (meta sf-action-token).
-const actionToken = document.querySelector('meta[name="sf-action-token"]')?.content || "";
+// El token se obtiene de /token (mismo origen); no va incrustado en el HTML.
+const actionToken = (await (await fetch("/token")).json()).token;
 
 async function action(actionName, input = {}) {
   const response = await fetch(routeWithRepo("/action", repo), {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-sf-action-token": actionToken },
+    headers: { "Content-Type": "application/json", "x-sf-token": actionToken },
     body: JSON.stringify({ actionName, input }),
   });
   const result = await response.json();
@@ -34,9 +34,9 @@ document.getElementById("initBtn").onclick = () => action("init", createInitPayl
 }));
 
 try {
-  const state = await (await fetch(routeWithRepo("/state", repo))).json();
+  const state = await (await fetch(routeWithRepo("/state", repo), { headers: { "x-sf-token": actionToken } })).json();
   renderState(state.status === "missing" ? null : state);
-  const events = new EventSource(routeWithRepo("/events", repo));
+  const events = new EventSource(`${routeWithRepo("/events", repo)}${repo ? "&" : "?"}token=${encodeURIComponent(actionToken)}`);
   events.onmessage = (event) => renderState(JSON.parse(event.data));
   events.onerror = () => log("conexión SSE perdida, reintentando…");
 } catch (error) {
