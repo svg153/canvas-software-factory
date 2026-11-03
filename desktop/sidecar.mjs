@@ -35,6 +35,9 @@ export function getFlag(argv, flag) {
   return v === undefined || v.startsWith("--") ? undefined : v;
 }
 
+// Puerto 0 (efimero) rechazado a proposito: el sidecar debe escuchar en un puerto
+// conocido por la app anfitriona (--port/SF_PORT); un efimero romperia la reconexion
+// y el health-check del host. server.mjs standalone si acepta 0 porque imprime la URL real.
 export function parseCliArgs(argv, env = {}) {
   const rawPort = getFlag(argv, "--port") ?? env.SF_PORT;
   let port = DEFAULT_PORT;
