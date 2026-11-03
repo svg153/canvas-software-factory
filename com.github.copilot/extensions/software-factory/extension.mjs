@@ -294,9 +294,11 @@ const factoryCanvas = createCanvas({
         required: ["idea"],
       },
       handler({ input }) {
-        const repoDir = input?.repo || session?.workspacePath || process.cwd();
-        return applyAction(repoDir, "idea", { idea: input?.idea });
-      },
+              // #92: no usar session.workspacePath (apunta al repo equivocado en worktrees).
+              // repoFrom() ya resuelve: input.repo → currentRepo → allowlist.resolve().
+              const repoDir = repoFrom(input);
+              return applyAction(repoDir, "idea", { idea: input?.idea });
+            },
     },
     {
       name: "next_work",
