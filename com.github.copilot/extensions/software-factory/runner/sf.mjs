@@ -125,10 +125,14 @@ async function cmdStatus() {
 // guarda state.json, no se escriben work orders, no se toca events.log ni gh.
 async function cmdNext() {
   const state0 = need(await loadState(repoPath));
+  const pp = flags("print-prompt");
+  const printPrompt = pp !== undefined;
+  const wantedId = flags("task") !== undefined && flags("task") !== true ? flags("task") : (typeof pp === "string" ? pp : null);
   if (state0.status !== "running") {
     const hint = state0.status === "done"
       ? "Fábrica terminada. Ejecuta init <repo> --repo owner/repo para una nueva ejecución."
       : "Ejecuta: node sf.mjs start <repo>";
+    if (printPrompt) { console.error(`status=${state0.status}. ${hint}`); process.exitCode = 3; return; }
     console.log(JSON.stringify({ status: state0.status, round: state0.round, phase: state0.phase, tasks: [], hint }, null, 2));
     return;
   }
@@ -159,6 +163,16 @@ async function cmdNext() {
   const open = openTasks(state);
   const failedNow = failedTasks(state).map((f) => ({ id: f.id, title: f.title }));
   const base = { dry_run: dry, ...(advancePreview ? { advance: advancePreview } : {}) };
+  if (printPrompt) {
+    const t = wantedId ? open.find((x) => x.id === wantedId) : open[0];
+    if (!t) { console.error(wantedId ? `Tarea abierta no encontrada: ${wantedId}` : `Sin tareas abiertas (fase ${state.phase}).`); process.exitCode = 3; return; }
+    let prompt = t.prompt_preview ?? null;
+    if (prompt === null) { try { prompt = await readFile(t.prompt_file, "utf8"); } catch { /* pending */ } }
+    if (prompt === null) { console.error(`Sin prompt disponible para ${t.id}`); process.exitCode = 3; return; }
+    await persist();
+    process.stdout.write(prompt);
+    return;
+  }
   if (open.length === 0) {
     console.log(JSON.stringify({ status: state.status, phase: state.phase, tasks: [], failed: failedNow, ...base }, null, 2));
     return;
