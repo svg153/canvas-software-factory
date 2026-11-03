@@ -60,7 +60,7 @@ test("--allow-host habilita un host extra", async () => {
   const repo = await mkdtemp(join(tmpdir(), "sf-sec-"));
   const srv = await startStandalone(["--repo", repo, "--allow-host", "lan.test"]);
   try {
-    assert.equal(await raw(srv.url, { path: "/token", headers: { host: "lan.test:1" } }), 200);
+    assert.equal(await raw(srv.url, { path: "/token", headers: { host: `lan.test:${new URL(srv.url).port}` } }), 200);
   } finally {
     srv.close();
     await rm(repo, { recursive: true, force: true });
@@ -115,6 +115,27 @@ test("server.mjs standalone sirve /state, aplica CSRF y allowlist", async () => 
     assert.equal((await fetch(`${url}/state?repo=${encodeURIComponent(tmpdir())}`, { headers: { "x-sf-token": token } })).status, 400);
   } finally {
     child.kill();
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("Origin con otro puerto, /token con Sec-Fetch/UA y resolveRepo real", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "sf-sec-"));
+  const srv = await startStandalone(["--repo", repo]);
+  try {
+    const port = Number(new URL(srv.url).port);
+    const token = (await (await fetch(`${srv.url}/token`)).json()).token;
+    assert.equal(await raw(srv.url, { path: "/state", headers: { origin: `http://localhost:${port + 1}`, "x-sf-token": token } }), 403);
+    const browserUa = "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120.0 Safari/537.36";
+    assert.equal(await raw(srv.url, { path: "/token", headers: { "sec-fetch-site": "same-origin", "user-agent": browserUa } }), 200);
+    assert.equal(await raw(srv.url, { path: "/token", headers: { "user-agent": browserUa } }), 403);
+    assert.equal(await raw(srv.url, { path: "/token", headers: { "user-agent": "curl/8.0" } }), 200);
+    const { realpathSync } = await import("node:fs");
+    const state = await (await fetch(`${srv.url}/state?repo=${encodeURIComponent(repo)}`, { headers: { "x-sf-token": token } })).json();
+    assert.ok(state);
+    assert.ok(realpathSync(repo));
+  } finally {
+    srv.close();
     await rm(repo, { recursive: true, force: true });
   }
 });

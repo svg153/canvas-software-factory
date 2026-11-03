@@ -46,7 +46,7 @@ export async function startStandalone(argv) {
       // realpath en ambos lados: evita bypass por symlinks o prefijos léxicos.
       const real = realOrSelf(target);
       if (!allow.some((root) => inside(realOrSelf(root), real))) throw new Error("repo fuera de la allowlist (--allow-repo)");
-      return target;
+      return real;
     },
   });
   const url = await service.listen(port);

@@ -31,11 +31,14 @@ export function createFactoryServer({
   allowHosts = [],
 }) {
   const allowed = new Set([...LOOPBACK_HOSTS, ...allowHosts.map((h) => h.toLowerCase())]);
-  const hostAllowed = (hostHeader) => allowed.has(hostnameOf(hostHeader));
-  const originAllowed = (origin) => {
+  const hostAllowed = (hostHeader, port) => {
+    const m = typeof hostHeader === "string" ? hostHeader.match(/:(\d{1,5})$/) : null;
+    return allowed.has(hostnameOf(hostHeader)) && Number(m ? m[1] : 80) === port;
+  };
+  const originAllowed = (origin, port) => {
     try {
       const u = new URL(origin);
-      return u.protocol === "http:" && allowed.has(u.hostname.toLowerCase());
+      return u.protocol === "http:" && allowed.has(u.hostname.toLowerCase()) && Number(u.port || 80) === port;
     } catch {
       return false;
     }
@@ -51,8 +54,9 @@ export function createFactoryServer({
   };
   return createServer(async (req, res) => {
     try {
-      if (!hostAllowed(req.headers.host)) return deny(res, 403, "sf_host_no_permitido");
-      if (req.headers.origin && !originAllowed(req.headers.origin)) return deny(res, 403, "sf_origen_no_permitido");
+      const serverPort = req.socket.localPort;
+      if (!hostAllowed(req.headers.host, serverPort)) return deny(res, 403, "sf_host_no_permitido");
+      if (req.headers.origin && !originAllowed(req.headers.origin, serverPort)) return deny(res, 403, "sf_origen_no_permitido");
       const requestUrl = new URL(req.url, "http://127.0.0.1");
       const requestedRepo = requestUrl.searchParams.get("repo");
       const path = requestUrl.pathname;
@@ -64,7 +68,10 @@ export function createFactoryServer({
         return;
       }
       if (req.method === "GET" && path === "/token") {
-        if (req.headers["sec-fetch-site"] === "cross-site") return deny(res, 403, "sf_origen_no_permitido");
+        const fetchSite = req.headers["sec-fetch-site"];
+        const ua = String(req.headers["user-agent"] || "");
+        const looksLikeBrowser = /Mozilla\/5\.0/.test(ua) && /(Chrome|Safari|Firefox)\//.test(ua);
+        if (fetchSite === "cross-site" || (!fetchSite && looksLikeBrowser)) return deny(res, 403, "sf_origen_no_permitido");
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify({ token: actionToken }));
         return;
