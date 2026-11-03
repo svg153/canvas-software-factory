@@ -19,7 +19,7 @@ export function paths(repoPath) {
   };
 }
 
-export const HARNESSES = ["copilot", "claude", "codex", "opencode", "gemini", "vscode"];
+export { HARNESS_IDS as HARNESSES } from "./harnesses.mjs";
 
 export const nowIso = () => new Date().toISOString();
 

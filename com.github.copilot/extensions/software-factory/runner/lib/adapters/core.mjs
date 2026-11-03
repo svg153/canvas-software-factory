@@ -1,18 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { HARNESSES, MODEL_PATTERN } from '../harnesses.mjs';
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const STDERR_TAIL = 2000;
 
-// Single matrix of harness flags. stdin:true => prompt piped via stdin; otherwise last arg.
-export const HARNESSES = {
-  copilot: { bin: 'copilot', base: ['-p'], model: ['--model'], stdin: true, hint: 'npm i -g @github/copilot' },
-  claude: { bin: 'claude', base: ['-p', '--permission-mode', 'acceptEdits'], model: ['--model'], stdin: true, hint: 'npm i -g @anthropic-ai/claude-code' },
-  codex: { bin: 'codex', base: ['exec', '--full-auto'], model: ['--model'], stdin: true, hint: 'npm i -g @openai/codex' },
-  opencode: { bin: 'opencode', base: ['run'], model: ['-m'], stdin: false, hint: 'npm i -g opencode-ai' },
-  gemini: { bin: 'gemini', base: ['-p'], model: ['--model'], stdin: true, hint: 'npm i -g @google/gemini-cli' },
-};
+export { HARNESSES };
 
 // Kills pid and all its descendants. execFn/killFn injectable for tests.
 export function killTree(pid, platform = process.platform, execFn = spawnSync, killFn = process.kill.bind(process)) {
@@ -26,8 +20,16 @@ export function killTree(pid, platform = process.platform, execFn = spawnSync, k
 const liveChildren = new Set();
 export function killAllChildren() { for (const pid of liveChildren) killTree(pid); liveChildren.clear(); }
 
-export const MODEL_PATTERN = /^[A-Za-z0-9._:/-]{1,64}$/;
+export { MODEL_PATTERN };
+// Charsets con propositos distintos, NO unificados a proposito:
+// - CMD_SAFE_ARG valida argv arbitrario que atraviesa cmd.exe (shim .cmd de npm):
+//   permite = @ + , - (comunes en rutas y flags) pero jamas espacio, comillas ni
+//   metacaracteres; los flags legitimos empiezan por '-', asi que el guion inicial vale.
+// - MODEL_PATTERN (harnesses.mjs) valida SOLO ids de modelo y es mas estricto: arranca
+//   alfanumerico para que un model de state.json no pueda interpretarse como flag.
+// La tabla compartida de casos vive en test/harness-hardening.test.mjs.
 const CMD_SAFE_ARG = /^[A-Za-z0-9._:/\\\\=@+,-]+$/;
+export { CMD_SAFE_ARG };
 
 export function validateModel(model) {
   if (typeof model !== 'string' || !MODEL_PATTERN.test(model)) {

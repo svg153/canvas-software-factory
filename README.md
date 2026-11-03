@@ -112,6 +112,14 @@ work orders (discover/plan/grill/review) run; `implement` tasks are listed as sk
 To revert work from a failed implement task: `git reset --hard <previous commit>` or
 discard the working branch.
 
+### Configuración de harness y modelo
+
+`sf.mjs init <repo> --repo o/r --harness codex --model X` guarda `harness`/`model` en
+`.software-factory/state.json`; `sf-run` los usa sin flags. Precedencia: **flags CLI > state.json > default**
+(`auto` = primer CLI disponible). Un harness o modelo inválido en config o flags falla de inmediato
+listando los ids válidos. El registro canónico (ids, binario, entrega del prompt, shim de Windows) vive
+**solo** en `runner/lib/harnesses.mjs`; `state.mjs` y `adapters/` lo importan.
+
 ## Runner contract (v2 semantics)
 
 - **`init` never overwrites silently.** If `<repo>/.software-factory/state.json`

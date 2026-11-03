@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // sf-run.mjs — headless autonomous executor: next -> adapter.run() -> complete.
-// Uso: node sf-run.mjs <repo> --harness <id> [--model X] [--max-tasks N] [--timeout SEG]
+// Uso: node sf-run.mjs <repo> [--harness <id>] [--model X] [--max-tasks N] [--timeout SEG]
 //        [--dry-run] [--yes] [--adapter-module path]
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { loadState, saveState, logEvent, hasResult } from "./lib/state.mjs";
 import { resolve as resolveAdapter, DEFAULT_TIMEOUT_MS } from "./lib/adapters/index.mjs";
 import { killAllChildren } from "./lib/adapters/core.mjs";
+import { validateHarnessConfig } from "./lib/harnesses.mjs";
 
 const execFileAsync = promisify(execFile);
 const sfPath = join(dirname(fileURLToPath(import.meta.url)), "sf.mjs");
@@ -36,7 +37,13 @@ export async function runFactory({
 }) {
   const summary = { done: 0, failed: 0, skipped: [], attempted: [], stopped: "", dryRun };
   const status = await sfJson("status", repo);
-  const ad = adapter || resolveAdapter(harness, { harness, model });
+  // Precedencia: flags CLI > config (state.json) > default (auto).
+  const cfg = (await loadState(repo)) || {};
+  validateHarnessConfig({ harness: cfg.harness, model: cfg.model }, "state.json");
+  validateHarnessConfig({ harness, model }, "CLI");
+  harness = harness || cfg.harness || undefined;
+  model = model || cfg.model || undefined;
+  const ad = adapter || resolveAdapter(harness, cfg);
   if (status.status !== "running") {
     summary.stopped = `factory status=${status.status}`;
     log(`[sf-run] ${summary.stopped}; nada que ejecutar`);
@@ -103,7 +110,7 @@ export async function runFactory({
   return summary;
 }
 
-export const USAGE = "Uso: node sf-run.mjs <repo> --harness <id> [--model X] [--max-tasks N] [--timeout SEG] [--dry-run] [--yes]\n  --timeout SEG  límite total en segundos (número > 0); al expirar mata el árbol del harness y sale con 124. Por defecto: sin límite global.\n  Ctrl+C/SIGTERM mata el árbol del harness y sale con 130.\n  El límite por tarea también mata el árbol completo (taskkill /T /F en Windows, kill del grupo de procesos en POSIX).";
+export const USAGE = "Uso: node sf-run.mjs <repo> [--harness <id>] [--model X] [--max-tasks N] [--timeout SEG] [--dry-run] [--yes]\n  --harness/--model  opcionales: flags > state.json (init --harness/--model) > auto.\n  --timeout SEG  límite total en segundos (número > 0); al expirar mata el árbol del harness y sale con 124. Por defecto: sin límite global.\n  Ctrl+C/SIGTERM mata el árbol del harness y sale con 130.\n  El límite por tarea también mata el árbol completo (taskkill /T /F en Windows, kill del grupo de procesos en POSIX).";
 
 // Validates raw CLI values; returns { error } or the parsed options.
 export function validateOptions(o) {
@@ -141,7 +148,7 @@ function parseArgs(argv) {
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.help) { console.log(USAGE); process.exit(0); }
-  if (!o.repo || (!o.harness && !o.adapterModule)) {
+  if (!o.repo) {
     console.error(USAGE);
     process.exit(2);
   }
