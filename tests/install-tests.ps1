@@ -14,9 +14,11 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:Passed = 0
 $script:Failed = 0
 $script:Failures = @()
+$script:Executed = [System.Collections.Generic.List[string]]::new()
 
 function It {
   param([string]$Name, [scriptblock]$Body)
+  $script:Executed.Add($Name) | Out-Null
   try {
     & $Body
     $script:Passed++
@@ -274,6 +276,38 @@ It "sf-install: generic es idempotente y conserva contenido de AGENTS.md" {
     Assert-True ($LASTEXITCODE -eq 0) "--check generic deberia pasar"
   } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
 }
+It "sf-install: --check reporta STALE cuando se borra un archivo del origen (exit 1)" {
+  $h = New-TempHome; $src = New-SourceSandbox
+  try {
+    $sb = Join-Path $src "tools\sf-install.mjs"
+    & node $sb --harness copilot --home $h | Out-Null
+    & node $sb --harness copilot --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "instalacion limpia deberia dar 0"
+    $extra = Join-Path $src "com.github.copilot\extensions\software-factory\runner\lib\old.mjs"
+    Set-Content $extra "old"
+    & node $sb --harness copilot --home $h | Out-Null
+    Remove-Item $extra
+    $out = & node $sb --harness copilot --home $h --check
+    Assert-True ($LASTEXITCODE -eq 1) "deberia dar 1, dio $LASTEXITCODE"
+    Assert-True (($out -join "`n") -match 'STALE: .*old\.mjs') "no reporto old.mjs: $out"
+    Assert-True (Test-Path (Join-Path $h ".copilot\skills\software-factory\runner\lib\old.mjs")) "--check no debe borrar"
+  } finally {
+    Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $src -ErrorAction SilentlyContinue
+  }
+}
+It "sf-install: --check nunca reporta archivos fuera del layout gestionado" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness claude --home $h | Out-Null
+    Set-Content (Join-Path $h ".claude\skills\other-skill.md") "ajeno"
+    Set-Content (Join-Path $h ".claude\skills\software-factory\notes.txt") "ajeno"
+    $out = & node $SfInstall --harness claude --home $h --check
+    Assert-True ($LASTEXITCODE -eq 0) "ajenos no deben causar exit 1"
+    Assert-True (-not (($out -join "`n") -match 'STALE')) "reporto ajeno: $out"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+
 It "sf-install: rutas por arnes" {
   $out = & node --input-type=module -e "import {targetsFor} from './tools/sf-install.mjs'; console.log(JSON.stringify(['copilot','claude','codex','opencode'].map(h=>targetsFor(h,'/h').skillDir.replace(/\\\\/g,'/'))))"
   $out = $out.Replace('\\','/')
@@ -282,6 +316,18 @@ It "sf-install: rutas por arnes" {
 
 Write-Host "`n== Resultado =="
 Write-Host "Pasadas: $script:Passed | Fallidas: $script:Failed"
+# Integridad por NOMBRE (sin minimo fijo que mantener a mano): todo It declarado en el
+# script debe haberse ejecutado; un It tragado por una llave o here-string mal pegado
+# se reporta por nombre. Convencion: ningun It dentro de here-strings o comentarios.
+$declaredNames = @(Select-String -Path $PSCommandPath -Pattern '^\s*It\s+"([^"]+)"' |
+  ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+$executedNames = @($script:Executed | Sort-Object -Unique)
+$missing = @($declaredNames | Where-Object { $_ -notin $executedNames })
+Write-Host "Its declarados: $($declaredNames.Count) | ejecutados: $($executedNames.Count)"
+if ($missing.Count -gt 0) {
+  Write-Host "  - Its declarados pero no ejecutados: $($missing -join '; ')" -ForegroundColor Red
+  exit 1
+}
 if ($script:Failed -gt 0) {
   $script:Failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
   exit 1
