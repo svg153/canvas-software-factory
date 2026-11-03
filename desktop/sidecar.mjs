@@ -16,17 +16,46 @@ export function sidecarUrl(port) {
   return `http://127.0.0.1:${port}/`;
 }
 
-// Standalone runner/server.mjs lands with PR #52; until then spawning fails with a clear error.
+// Standalone runner/server.mjs must exist at DEFAULT_SERVER; otherwise spawning fails with a clear error.
 export function startSidecar({ node = process.execPath, server = DEFAULT_SERVER, ...opts }) {
   if (!existsSync(server)) {
-    throw new Error(`sidecar entrypoint not found: ${server} (standalone server.mjs requires PR #52)`);
+    throw new Error(`sidecar entrypoint not found: ${server} (standalone runner/server.mjs is required)`);
   }
   const child = spawn(node, buildSidecarArgs({ server, ...opts }), { stdio: "inherit" });
   return { child, url: sidecarUrl(opts.port), stop: () => child.kill() };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const get = (f) => process.argv[process.argv.indexOf(f) + 1];
-  const { child } = startSidecar({ repo: get("--repo"), port: Number(get("--port") ?? 4317) });
-  process.on("SIGINT", () => child.kill());
+export const DEFAULT_PORT = 4317;
+
+// Returns the value following `flag`, or undefined when absent or valueless.
+export function getFlag(argv, flag) {
+  const i = argv.indexOf(flag);
+  if (i === -1) return undefined;
+  const v = argv[i + 1];
+  return v === undefined || v.startsWith("--") ? undefined : v;
+}
+
+// Puerto 0 (efimero) rechazado a proposito: el sidecar debe escuchar en un puerto
+// conocido por la app anfitriona (--port/SF_PORT); un efimero romperia la reconexion
+// y el health-check del host. server.mjs standalone si acepta 0 porque imprime la URL real.
+export function parseCliArgs(argv, env = {}) {
+  const rawPort = getFlag(argv, "--port") ?? env.SF_PORT;
+  let port = DEFAULT_PORT;
+  if (rawPort !== undefined) {
+    port = Number(rawPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`invalid port: ${JSON.stringify(rawPort)} (expected an integer between 1 and 65535)`);
+    }
+  }
+  return { repo: getFlag(argv, "--repo") ?? env.SF_REPO, port };
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const { child } = startSidecar(parseCliArgs(process.argv.slice(2), process.env));
+    process.on("SIGINT", () => child.kill());
+  } catch (err) {
+    console.error(`sidecar: ${err.message}`);
+    process.exit(1);
+  }
 }

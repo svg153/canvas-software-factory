@@ -18,8 +18,10 @@ jobs:
       - name: Run regression tests
         run: npm test
         working-directory: com.github.copilot/extensions/software-factory
+      - name: Desktop JS tests (config/paths/sidecar parser; no Rust, cargo NOT run)
+        run: node --test desktop/test/
       - name: Check JavaScript syntax
-        run: find com.github.copilot tools -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
+        run: find com.github.copilot tools desktop -type f -name '*.mjs' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
       - name: Validate manifests
         run: node --input-type=module -e "import fs from 'node:fs'; for (const path of ['plugin.json', 'com.github.copilot/extensions/software-factory/package.json', 'canvas-meta.json']) JSON.parse(fs.readFileSync(path, 'utf8'))"
       - name: Partial external layout/manifest check (official awesome-copilot gate not run)
