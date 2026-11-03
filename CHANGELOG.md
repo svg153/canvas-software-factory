@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.1.6
+
+### Added
+- Sección «GitHub — trabajo existente» (#90): el panel ahora puede listar las issues y PRs
+  abiertos reales del repo (`gh issue list` / `gh pr list`), no solo lo que hay en el
+  `state.json` del run actual. Botón «Actualizar GitHub» (solo lectura) con dos columnas:
+  issues (nº, título, labels) y PRs (nº, título, draft/conflictos/estado de checks).
+- Botón «Importar abiertas»: vincula las issues abiertas de GitHub a `state.issues` para que
+  la fase issues no las duplique (`createIssuesFromDraft` ya deduce contra el estado vía
+  `sameIssue`). Solo persiste si hay novedades; cada issue importada queda marcada
+  `imported: true`.
+- Nuevas acciones runner/extension: `github_status` y `import_issues`, registradas también
+  como acciones del canvas.
+
+### Fixed
+- `getGithubStatus` es blando: si `gh` falla en una de las dos listas (auth, rate limit),
+  la otra se muestra igualmente y el fallo parcial se devuelve como `note` recortada.
+  Los errores de importación se traducen a un mensaje fijo (no se filtra el estado interno).
+
+### Changed
+- `gh.mjs`: validación de slug unificada en `assertRepoSlug` (la compartían
+  `projectsV2Args` a mano y ahora los comandos `issue/pr list`).
+
 ## v0.1.5
 
 ### Fixed

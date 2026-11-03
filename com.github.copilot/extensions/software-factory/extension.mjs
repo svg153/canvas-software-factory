@@ -10,9 +10,9 @@ import { createFactoryServer } from "./runner/lib/http.mjs";
 import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
 import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
-import { updateState } from "./runner/lib/state.mjs";
+import { updateState, saveState } from "./runner/lib/state.mjs";
 import { deriveGithubRepo } from "./runner/lib/git.mjs";
-import { listLinkedProjects } from "./runner/lib/gh.mjs";
+import { listLinkedProjects, getGithubStatus, importOpenIssues } from "./runner/lib/gh.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, "runner", "sf.mjs");
@@ -129,6 +129,38 @@ async function applyAction(repoDir, actionName, input = {}) {
     const { promisify } = await import("node:util");
     const out = await promisify(execFile)("node", [RUNNER, ...ideaRunnerArgs(repoDir, input)], { windowsHide: true });
     return JSON.parse(out.stdout.trim());
+  }
+  if (actionName === "github_status") {
+    // #90: el panel debe poder continuar trabajo ya existente en GitHub: muestra las
+    // issues/PRs abiertas reales del repo, no solo las del state.json del run actual.
+    const state = await readState(repoDir);
+    const rawRepo = typeof state?.repo === "string" ? state.repo : "";
+    // state.repo puede ser basura (o faltar en un run sin Init): fallback al remote.
+    const slug = /^[\w.-]+\/[\w.-]+$/.test(rawRepo) ? rawRepo : await deriveGithubRepo(repoDir);
+    if (!slug) {
+      return { status: "github_status", issues: [], pulls: [], note: "sin owner/repo: pulsa «Detectar» o completa Init" };
+    }
+    // getGithubStatus es blando: nunca lanza, devuelve listas + nota parcial.
+    const out = await getGithubStatus(slug);
+    return { status: "github_status", slug, ...out };
+  }
+  if (actionName === "import_issues") {
+    // #90: vincula las issues abiertas al run para que la fase issues no las duplique.
+    const state = await readState(repoDir);
+    if (!state) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
+    let out;
+    try {
+      out = await importOpenIssues(state, {
+        persistState: async () => {
+          await saveState(repoDir, state);
+          broadcast(repoDir, state);
+        },
+      });
+    } catch {
+      // Mensaje fijo: los errores de repoSlug/gh pueden citar valores del estado.
+      throw new CanvasError("sf_import_fallo", "no se pudieron vincular las issues: revisa owner/repo con «Detectar»");
+    }
+    return { status: "import_issues", ...out };
   }
   if (actionName === "next") {
     const { execFile } = await import("node:child_process");
@@ -271,6 +303,20 @@ const factoryCanvas = createCanvas({
       description: "Pide al runner la siguiente tanda de work orders (fase actual).",
       handler({ input }) {
         return applyAction(repoFrom(input), "next");
+      },
+    },
+    {
+      name: "github_status",
+      description: "#90: lista issues y PRs abiertos del repo en GitHub (solo lectura).",
+      handler({ input }) {
+        return applyAction(repoFrom(input), "github_status");
+      },
+    },
+    {
+      name: "import_issues",
+      description: "#90: vincula las issues abiertas de GitHub al run para no duplicarlas.",
+      handler({ input }) {
+        return applyAction(repoFrom(input), "import_issues");
       },
     },
   ],
