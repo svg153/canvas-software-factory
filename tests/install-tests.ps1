@@ -14,9 +14,11 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:Passed = 0
 $script:Failed = 0
 $script:Failures = @()
+$script:Executed = [System.Collections.Generic.List[string]]::new()
 
 function It {
   param([string]$Name, [scriptblock]$Body)
+  $script:Executed.Add($Name) | Out-Null
   try {
     & $Body
     $script:Passed++
@@ -230,6 +232,88 @@ It "aborta si falta tools/make-canvas-manifest.mjs y no escribe nada" {
   }
 }
 
+Write-Host "`n== sf-install.mjs (--home temporal) =="
+$SfInstall = Join-Path $RepoRoot "tools\sf-install.mjs"
+It "sf-install: install copilot y --check pasa" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness copilot --home $h | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "install fallo"
+    Assert-True (Test-Path (Join-Path $h ".copilot\skills\software-factory\SKILL.md")) "falta SKILL.md"
+    Assert-True (Test-Path (Join-Path $h ".copilot\skills\software-factory\runner\sf.mjs")) "falta runner"
+    & node $SfInstall --harness copilot --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "--check deberia pasar"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: marcador alterado -> --check falla con exit 1" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness claude --home $h | Out-Null
+    $m = Join-Path $h ".claude\skills\software-factory\.sf-install.json"
+    (Get-Content $m -Raw).Replace('"version": "', '"version": "0.0.0-old') | Set-Content $m
+    & node $SfInstall --harness claude --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 1) "--check deberia devolver 1, devolvio $LASTEXITCODE"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: --dry-run no escribe nada" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness opencode --home $h --dry-run | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "dry-run fallo"
+    Assert-True (@(Get-ChildItem -Recurse -Force $h).Count -eq 0) "dry-run escribio archivos"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: generic es idempotente y conserva contenido de AGENTS.md" {
+  $h = New-TempHome
+  try {
+    Set-Content (Join-Path $h "AGENTS.md") "# mio"
+    & node $SfInstall --harness generic --home $h | Out-Null
+    & node $SfInstall --harness generic --home $h | Out-Null
+    $t = Get-Content (Join-Path $h "AGENTS.md") -Raw
+    Assert-True ($t -match '# mio') "contenido previo perdido"
+    Assert-True (([regex]::Matches($t, 'BEGIN software-factory')).Count -eq 1) "bloque duplicado"
+    & node $SfInstall --harness generic --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "--check generic deberia pasar"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+It "sf-install: --check reporta STALE cuando se borra un archivo del origen (exit 1)" {
+  $h = New-TempHome; $src = New-SourceSandbox
+  try {
+    $sb = Join-Path $src "tools\sf-install.mjs"
+    & node $sb --harness copilot --home $h | Out-Null
+    & node $sb --harness copilot --home $h --check | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "instalacion limpia deberia dar 0"
+    $extra = Join-Path $src "com.github.copilot\extensions\software-factory\runner\lib\old.mjs"
+    Set-Content $extra "old"
+    & node $sb --harness copilot --home $h | Out-Null
+    Remove-Item $extra
+    $out = & node $sb --harness copilot --home $h --check
+    Assert-True ($LASTEXITCODE -eq 1) "deberia dar 1, dio $LASTEXITCODE"
+    Assert-True (($out -join "`n") -match 'STALE: .*old\.mjs') "no reporto old.mjs: $out"
+    Assert-True (Test-Path (Join-Path $h ".copilot\skills\software-factory\runner\lib\old.mjs")) "--check no debe borrar"
+  } finally {
+    Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $src -ErrorAction SilentlyContinue
+  }
+}
+It "sf-install: --check nunca reporta archivos fuera del layout gestionado" {
+  $h = New-TempHome
+  try {
+    & node $SfInstall --harness claude --home $h | Out-Null
+    Set-Content (Join-Path $h ".claude\skills\other-skill.md") "ajeno"
+    Set-Content (Join-Path $h ".claude\skills\software-factory\notes.txt") "ajeno"
+    $out = & node $SfInstall --harness claude --home $h --check
+    Assert-True ($LASTEXITCODE -eq 0) "ajenos no deben causar exit 1"
+    Assert-True (-not (($out -join "`n") -match 'STALE')) "reporto ajeno: $out"
+  } finally { Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue }
+}
+
+It "sf-install: rutas por arnes" {
+  $out = & node --input-type=module -e "import {targetsFor} from './tools/sf-install.mjs'; console.log(JSON.stringify(['copilot','claude','codex','opencode'].map(h=>targetsFor(h,'/h').skillDir.replace(/\\\\/g,'/'))))"
+  $out = $out.Replace('\\','/')
+  Assert-True ($out -match '/h/.copilot/skills/software-factory' -and $out -match '/h/.config/opencode/skill/software-factory' -and $out -match '.codex/skills' -and $out -match '.claude/skills') "rutas incorrectas: $out"
+}
+
 Write-Host "`n== Deteccion de deriva (-Check) y release =="
 It "install.ps1 -Check falla sin instalacion y no escribe nada" {
   $h = New-TempHome
@@ -274,6 +358,18 @@ It "release.yml, CODEOWNERS, SECURITY y CONTRIBUTING existen" {
 }
 Write-Host "`n== Resultado =="
 Write-Host "Pasadas: $script:Passed | Fallidas: $script:Failed"
+# Integridad por NOMBRE (sin minimo fijo que mantener a mano): todo It declarado en el
+# script debe haberse ejecutado; un It tragado por una llave o here-string mal pegado
+# se reporta por nombre. Convencion: ningun It dentro de here-strings o comentarios.
+$declaredNames = @(Select-String -Path $PSCommandPath -Pattern '^\s*It\s+"([^"]+)"' |
+  ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+$executedNames = @($script:Executed | Sort-Object -Unique)
+$missing = @($declaredNames | Where-Object { $_ -notin $executedNames })
+Write-Host "Its declarados: $($declaredNames.Count) | ejecutados: $($executedNames.Count)"
+if ($missing.Count -gt 0) {
+  Write-Host "  - Its declarados pero no ejecutados: $($missing -join '; ')" -ForegroundColor Red
+  exit 1
+}
 if ($script:Failed -gt 0) {
   $script:Failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
   exit 1

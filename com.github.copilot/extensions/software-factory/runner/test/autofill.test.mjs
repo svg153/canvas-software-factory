@@ -93,9 +93,10 @@ test("index.html: campo renombrado a Project board ID y botón Detectar (#84/#83
 });
 
 test("extension.mjs: acción autofill con las dos derivaciones (#82/#83)", () => {
-  const src = readFileSync(join(extDir, "extension.mjs"), "utf8");
-  assert.match(src, /actionName === "autofill"/);
-  assert.match(src, /deriveGithubRepo\(repoDir\)/);
-  assert.match(src, /listLinkedProjects\(githubRepo\)/);
-  assert.match(src, /import \{ deriveGithubRepo \} from "\.\/runner\/lib\/git\.mjs"/);
+  // Tras la fusión la lógica de autofill vive en service.mjs (extension.mjs es cliente fino).
+  const svc = readFileSync(join(extDir, "runner", "lib", "service.mjs"), "utf8");
+  assert.match(svc, /actionName === "autofill"/);
+  assert.match(svc, /deriveGithubRepo\(repoDir\)/);
+  assert.match(svc, /listLinkedProjects\(githubRepo\)/);
+  assert.match(svc, /import \{ deriveGithubRepo \} from "\.\/git\.mjs"/);
 });

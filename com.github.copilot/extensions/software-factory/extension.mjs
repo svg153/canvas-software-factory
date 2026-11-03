@@ -1,176 +1,13 @@
-// Software Factory canvas — panel de control de la fábrica.
-// Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
-import { readFile } from "node:fs/promises";
+// Software Factory canvas — cliente fino del SDK; la lógica vive en runner/lib/service.mjs.
 import { statSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { join } from "node:path";
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
-import { createFactoryServer } from "./runner/lib/http.mjs";
+import { createFactoryService, ActionError } from "./runner/lib/service.mjs";
 import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
-import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
-import { updateState, saveState } from "./runner/lib/state.mjs";
-import { deriveGithubRepo } from "./runner/lib/git.mjs";
-import { listLinkedProjects, getGithubStatus, importOpenIssues } from "./runner/lib/gh.mjs";
+import { RUNNER } from "./runner/lib/service.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const RUNNER = join(__dirname, "runner", "sf.mjs");
-const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
-const subscribers = new Map();
 let session;
-
-function sfPaths(repoDir) {
-  const root = join(repoDir, ".software-factory");
-  return { root, state: join(root, "state.json") };
-}
-
-async function readState(repoDir) {
-  if (!repoDir) return null;
-  try {
-    return JSON.parse(await readFile(sfPaths(repoDir).state, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-async function writeStatus(repoDir, status) {
-  const state = await updateState(repoDir, (current) => {
-    if (!current) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
-    current.status = status;
-    return current;
-  });
-  broadcast(repoDir, state);
-  return state;
-}
-
-function factoryPrompt(repoDir, state) {
-  return bootstrapPrompt(repoDir, RUNNER, state);
-}
-
-// Polling del state.json por repo para re-broadcast SSE. El timer se libera solo
-// cuando el repo se queda sin suscriptores (antes quedaba vivo para siempre).
-const watchers = new Map();
-function ensureWatch(repoDir) {
-  if (!repoDir) return;
-  if (watchers.has(repoDir)) return;
-  const timer = setInterval(async () => {
-    if (!subscribers.get(repoDir)?.size) {
-      clearInterval(timer);
-      watchers.delete(repoDir);
-      return;
-    }
-    const state = await readState(repoDir);
-    if (state) broadcast(repoDir, state);
-  }, 2500);
-  watchers.set(repoDir, timer);
-}
-
-function broadcast(repoDir, state) {
-  const subs = subscribers.get(repoDir);
-  if (!subs) return;
-  const payload = `data: ${JSON.stringify(state)}\n\n`;
-  for (const res of subs) res.write(payload);
-}
-
-async function applyAction(repoDir, actionName, input = {}) {
-  // El host de extensiones no es una sesión de chat: sin ?repo= válido el defaultRepo
-  // cae a un directorio cualquiera. Nunca escribamos estado de fábrica fuera de un git.
-  if (!repoIsGitWorkspace(repoDir)) {
-    throw new CanvasError("sf_repo_no_permitido",
-      "El panel no tiene un repo de trabajo. Escribe la ruta absoluta de tu workspace (git) en el campo «Repo» y pulsa «Usar repo».");
-  }
-  if (actionName === "get_state") {
-    const state = await readState(repoDir);
-    return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, notes: state?.notes || "", runner: RUNNER };
-  }
-  if (actionName === "play") {
-    const guard = startGuardError(await readState(repoDir));
-    if (guard) throw new CanvasError("sf_done", guard);
-    const state = await writeStatus(repoDir, "running");
-    if (session) await session.send({ prompt: factoryPrompt(repoDir, state) });
-    return { status: "Fábrica lanzada — el agente recibió el prompt de arranque", state };
-  }
-  if (actionName === "pause") {
-    const state = await writeStatus(repoDir, "paused");
-    return { status: "Fábrica en pausa", state };
-  }
-  if (actionName === "init") {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    try {
-      const out = await promisify(execFile)("node", [RUNNER, ...initRunnerArgs(repoDir, input)], { windowsHide: true });
-      return { status: "inicializado", output: out.stdout.trim() };
-    } catch (e) {
-      // #88: el runner aborta exit 1 con un mensaje accionable (p. ej. estado existente
-      // sin --force). Sin este catch el usuario solo veía el código genérico.
-      const detail = String(e.stderr || e.stdout || e.message || "").trim().split("\n").filter(Boolean).join(" ").slice(0, 300);
-      if (/--force/.test(detail)) return { status: "aviso", needs_force: true, message: detail };
-      throw Object.assign(new CanvasError("sf_init_fallo", detail), { code: "sf_init_fallo", message: detail });
-    }
-  }
-  if (actionName === "autofill") {
-    // #82/#83: derivar owner/repo del remote y detectar el Project vinculado.
-    const githubRepo = await deriveGithubRepo(repoDir);
-    const out = { status: "autofill", github_repo: githubRepo, projects: [] };
-    if (githubRepo) {
-      try {
-        out.projects = await listLinkedProjects(githubRepo);
-      } catch (e) {
-        out.note = `gh api falló: ${String(e.message).slice(0, 160)}`;
-      }
-    } else {
-      out.note = "el repo no tiene remote origin en github.com";
-    }
-    return out;
-  }
-  if (actionName === "idea") {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, ...ideaRunnerArgs(repoDir, input)], { windowsHide: true });
-    return JSON.parse(out.stdout.trim());
-  }
-  if (actionName === "github_status") {
-    // #90: el panel debe poder continuar trabajo ya existente en GitHub: muestra las
-    // issues/PRs abiertas reales del repo, no solo las del state.json del run actual.
-    const state = await readState(repoDir);
-    const rawRepo = typeof state?.repo === "string" ? state.repo : "";
-    // state.repo puede ser basura (o faltar en un run sin Init): fallback al remote.
-    const slug = /^[\w.-]+\/[\w.-]+$/.test(rawRepo) ? rawRepo : await deriveGithubRepo(repoDir);
-    if (!slug) {
-      return { status: "github_status", issues: [], pulls: [], note: "sin owner/repo: pulsa «Detectar» o completa Init" };
-    }
-    // getGithubStatus es blando: nunca lanza, devuelve listas + nota parcial.
-    const out = await getGithubStatus(slug);
-    return { status: "github_status", slug, ...out };
-  }
-  if (actionName === "import_issues") {
-    // #90: vincula las issues abiertas al run para que la fase issues no las duplique.
-    const state = await readState(repoDir);
-    if (!state) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
-    let out;
-    try {
-      out = await importOpenIssues(state, {
-        persistState: async () => {
-          await saveState(repoDir, state);
-          broadcast(repoDir, state);
-        },
-      });
-    } catch {
-      // Mensaje fijo: los errores de repoSlug/gh pueden citar valores del estado.
-      throw new CanvasError("sf_import_fallo", "no se pudieron vincular las issues: revisa owner/repo con «Detectar»");
-    }
-    return { status: "import_issues", ...out };
-  }
-  if (actionName === "next") {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, "next", repoDir], { windowsHide: true });
-    return JSON.parse(out.stdout.trim());
-  }
-  throw new CanvasError("sf_unknown_action", `Acción desconocida: ${actionName}`);
-}
-
 const defaultRepo = () => session?.workspacePath || process.cwd();
 const allowlist = createRepoAllowlist({ defaultRepo });
 // El host de extensiones no es una sesión de chat: su cwd/workspacePath no es un repo.
@@ -207,23 +44,27 @@ function resolveRepoInput(requested) {
   return real;
 }
 
-const server = createFactoryServer({
-  extensionDir: __dirname,
+const service = createFactoryService({
   defaultRepo,
   resolveRepo: resolveRepoInput,
-  readState,
-  ensureWatch,
-  applyAction,
-  subscribe(repoDir, res) {
-    if (!subscribers.has(repoDir)) subscribers.set(repoDir, new Set());
-    subscribers.get(repoDir).add(res);
-    res.on("close", () => subscribers.get(repoDir)?.delete(res));
+  async onPlay(repoDir, state) {
+    if (!session) return false;
+    await session.send({ prompt: bootstrapPrompt(repoDir, RUNNER, state) });
+    return true;
   },
+  playMessage: "Fábrica en running (sin sesión Copilot activa).",
 });
-
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-const baseUrl = `http://127.0.0.1:${server.address().port}`;
-
+const baseUrl = await service.listen(0);
+const applyAction = (repoDir, name, input) =>
+  service.applyAction(repoDir, name, input).catch((e) => {
+    if (e instanceof ActionError) throw new CanvasError(e.code, e.message);
+    // El host de extensiones no es una sesión de chat: sin repo válido no hay fábrica.
+    if (name !== "get_state" && !repoIsGitWorkspace(repoDir)) {
+      throw new CanvasError("sf_repo_no_permitido",
+        "El panel no tiene un repo de trabajo. Escribe la ruta absoluta de tu workspace (git) en el campo «Repo» y pulsa «Usar repo».");
+    }
+    throw e;
+  });
 const factoryCanvas = createCanvas({
   id: "software-factory",
   displayName: "Software Factory",
@@ -294,11 +135,11 @@ const factoryCanvas = createCanvas({
         required: ["idea"],
       },
       handler({ input }) {
-              // #92: no usar session.workspacePath (apunta al repo equivocado en worktrees).
-              // repoFrom() ya resuelve: input.repo → currentRepo → allowlist.resolve().
-              const repoDir = repoFrom(input);
-              return applyAction(repoDir, "idea", { idea: input?.idea });
-            },
+        // #92: no usar session.workspacePath (apunta al repo equivocado en worktrees).
+        // repoFrom() ya resuelve: input.repo → allowlist.resolve().
+        const repoDir = repoFrom(input);
+        return applyAction(repoDir, "idea", { idea: input?.idea });
+      },
     },
     {
       name: "next_work",

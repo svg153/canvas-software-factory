@@ -31,6 +31,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Write-Host "Nota: para instalar el runner+skill en cualquier arnes y detectar drift usa 'node tools/sf-install.mjs --harness <copilot|claude|codex|opencode|generic> [--check]'. Este script sigue instalando el canvas de Copilot." -ForegroundColor Yellow
 if ([string]::IsNullOrWhiteSpace($CopilotHome)) { throw "COPILOT_HOME vacío o no resoluble." }
 
 $extSource = Join-Path $PSScriptRoot "com.github.copilot\extensions\software-factory"

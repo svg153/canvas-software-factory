@@ -131,7 +131,7 @@ async function runApp({ search = "", token = "tok", state = { status: "running",
     fetch: async (url, opts) => {
       calls.push({ url, opts });
       if (fetchImpl) return fetchImpl(url, opts);
-      return { json: async () => (url.startsWith("/action") ? { status: "ok" } : state) };
+      return { json: async () => (url === "/token" ? { token } : url.startsWith("/action") ? { status: "ok" } : state) };
     },
   };
   for (const k of Object.keys(g)) Object.defineProperty(globalThis, k, { value: g[k], configurable: true, writable: true });
@@ -143,9 +143,11 @@ async function runApp({ search = "", token = "tok", state = { status: "running",
 
 test("app.mjs: carga /state, renderiza y se suscribe a /events con repo", async () => {
   const { els, calls, sources } = await runApp({ search: "?repo=C%3A%5Cx" });
-  assert.equal(calls[0].url, "/state?repo=C%3A%5Cx");
+  // Tras la fusión el panel pide primero /token y envía x-sf-token en /state.
+  assert.equal(calls[0].url, "/token");
+  assert.equal(calls[1].url, "/state?repo=C%3A%5Cx");
   assert.equal(els.status.textContent, "running");
-  assert.equal(sources[0].url, "/events?repo=C%3A%5Cx");
+  assert.equal(sources[0].url, "/events?repo=C%3A%5Cx&token=tok");
   sources[0].onmessage({ data: JSON.stringify({ status: "paused", phase: "plan" }) });
   assert.equal(els.status.textContent, "paused");
   sources[0].onerror();
@@ -162,7 +164,7 @@ test("app.mjs: acciones play/pause/init envían token y payload; errores se regi
   await els.play.onclick();
   const play = calls.find((c) => c.url === "/action");
   assert.equal(play.opts.method, "POST");
-  assert.equal(play.opts.headers["x-sf-action-token"], "tok");
+  assert.equal(play.opts.headers["x-sf-token"], "tok");
   assert.deepEqual(JSON.parse(play.opts.body), { actionName: "play", input: {} });
   assert.match(els.log.textContent, /✔ ok/);
 
@@ -221,19 +223,21 @@ test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas"
   assert.match(src, /applyAction\(repoDir, "init", \{\s*repo: input\?\.github_repo,/);
   assert.match(src, /const repoDir = repoFrom\(input\)/);
   assert.match(src, /const repoFrom = \(input\) => allowlist\.resolve\(input\?\.repo\)/);
-  assert.match(src, /initRunnerArgs\(repoDir, input\)/);
-  // #88: la rama init captura el exit 1 del runner y lo traduce (aviso needs_force o CanvasError).
-  assert.match(src, /if \(\/--force\/\.test\(detail\)\) return \{ status: "aviso", needs_force: true, message: detail \}/);
-  assert.match(src, /throw Object\.assign\(new CanvasError\("sf_init_fallo", detail\)/);
-  assert.match(src, /startGuardError\(await readState\(repoDir\)\)/);
-  assert.match(src, /throw new CanvasError\("sf_unknown_action"/);
+  // Tras la fusión la lógica de acciones vive en service.mjs (extension.mjs es cliente fino).
+  const svc = read(join("runner", "lib", "service.mjs"));
+  assert.match(svc, /initRunnerArgs\(repoDir, input\)/);
+  // #88: la rama init captura el exit 1 del runner y lo traduce (aviso needs_force o ActionError).
+  assert.match(svc, /if \(\/--force\/\.test\(detail\)\) return \{ status: "aviso", needs_force: true, message: detail \}/);
+  assert.match(svc, /throw new ActionError\("sf_init_fallo", detail\)/);
+  assert.match(svc, /startGuardError\(await readState\(repoDir\)\)/);
+  assert.match(svc, /throw new ActionError\("sf_unknown_action"/);
   // Todo spawn del runner debe ocultar la consola: windowsHide en cada sitio execFile.
-  const execSites = (src.match(/promisify\(execFile\)\(/g) || []).length;
-  assert.ok(execSites >= 2, "debe haber llamadas a execFile");
-  assert.equal((src.match(/windowsHide: true/g) || []).length, execSites);
-  assert.match(src, /setInterval\([\s\S]*2500\)/);
-  assert.match(src, /clearInterval\(timer\)/);
-  assert.match(src, /server\.listen\(0, "127\.0\.0\.1"/);
+  assert.ok((svc.match(/windowsHide: true/g) || []).length >= 2, "cada execFile debe ocultar la consola");
+  assert.match(svc, /promisify\(execFile\)/);
+  assert.match(svc, /setInterval\([\s\S]*2500\)/);
+  assert.match(svc, /clearInterval\(timer\)/);
+  assert.match(svc, /server\.listen\(port, "127\.0\.0\.1"/);
+  assert.match(src, /service\.listen\(0\)/);
 });
 
 test("index.html: ids que usan app.mjs/ui.mjs, token CSRF y módulo", () => {
@@ -241,7 +245,8 @@ test("index.html: ids que usan app.mjs/ui.mjs, token CSRF y módulo", () => {
   const ids = new Set([...(read("app.mjs") + read("ui.mjs")).matchAll(/getElementById\("(\w+)"\)/g)].map((m) => m[1]));
   assert.ok(ids.size >= 10);
   for (const id of ids) assert.ok(html.includes(`id="${id}"`), id);
-  assert.ok(html.includes('<meta name="sf-action-token" content="__SF_ACTION_TOKEN__"'));
+  // Tras la fusión el token se sirve por /token: nada de placeholders en el HTML.
+  assert.ok(!html.includes("__SF_ACTION_TOKEN__"));
   assert.ok(html.includes('<script type="module" src="/app.mjs">'));
 });
 
@@ -298,8 +303,9 @@ test("app.mjs: ghBtn/importBtn llaman github_status/import_issues y registran el
       return { json: async () => ({ status: "running", phase: "plan" }) };
     },
   });
-  // Sin auto-refresh al cargar: la primera llamada sigue siendo /state.
-  assert.equal(calls[0].url, "/state");
+  // Sin auto-refresh al cargar: tras /token, la primera llamada de datos es /state.
+  assert.equal(calls[0].url, "/token");
+  assert.equal(calls[1].url, "/state");
   await els.ghBtn.onclick();
   assert.deepEqual(JSON.parse(calls.at(-1).opts.body), { actionName: "github_status", input: {} });
   assert.match(els.ghIssues.textContent, /#5 Algo/);
@@ -314,11 +320,15 @@ test("extension.mjs: ramas github_status/import_issues (#90)", () => {
   const src = read("extension.mjs");
   for (const name of ["github_status", "import_issues"]) {
     assert.ok(src.includes(`name: "${name}"`), name);
-    assert.ok(src.includes(`actionName === "${name}"`), name);
   }
-  assert.match(src, /getGithubStatus\(slug\)/);
-  assert.match(src, /importOpenIssues\(state, \{/);
-  assert.match(src, /saveState\(repoDir, state\)/);
+  // El enrutado y la lógica de #90 viven en service.mjs tras la fusión.
+  const svc = read(join("runner", "lib", "service.mjs"));
+  for (const name of ["github_status", "import_issues"]) {
+    assert.ok(svc.includes(`actionName === "${name}"`), name);
+  }
+  assert.match(svc, /getGithubStatus\(slug\)/);
+  assert.match(svc, /importOpenIssues\(state, \{/);
+  assert.match(svc, /saveState\(repoDir, state\)/);
   // El fallo de importación se traduce a mensaje fijo: nada del estado del run al exterior.
-  assert.match(src, /no se pudieron vincular las issues/);
+  assert.match(svc, /no se pudieron vincular las issues/);
 });

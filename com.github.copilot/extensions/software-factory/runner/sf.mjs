@@ -7,9 +7,10 @@ import { readFile } from "node:fs/promises";
 import {
   loadState, saveState, defaultState, logEvent, paths, nowIso,
   newTask, writeWorkOrder, openTasks, failedTasks, unclaimedIssues, hasResult, PHASES,
+  HARNESSES,
 } from "./lib/state.mjs";
 import {
-  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
+  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt, flattenIssueText,
 } from "./lib/prompts.mjs";
 import { createIssuesFromDraft, validateInitInputs } from "./lib/gh.mjs";
 import { startGuardError } from "./lib/actions.mjs";
@@ -43,7 +44,7 @@ const phasePlan = {
   implement: (s) => {
     return unclaimedIssues(s)
       .map((i) => ({
-        title: `Implementar #${i.number} ${i.title}`,
+        title: `Implementar #${i.number} ${flattenIssueText(i.title)}`,
         prompt: (st, t) => implementPrompt(st, t, i),
         meta: { issue: i },
       }));
@@ -98,7 +99,13 @@ async function cmdInit() {
     for (const m of inputErrors) console.error(m);
     process.exit(1);
   }
-  const state = defaultState(repoPath, { repo, project, projectOwner, rounds });
+  const harness = flags("harness") || "";
+  const model = flags("model") || "";
+  if (harness && !HARNESSES.includes(harness)) {
+    console.error(`--harness "${harness}" no es válido. Valores permitidos: ${HARNESSES.join(", ")}.`);
+    process.exit(1);
+  }
+  const state = defaultState(repoPath, { repo, project, projectOwner, rounds, harness, model });
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
   console.log(JSON.stringify({ ok: true, sf: paths(repoPath).root, state: "idle" }, null, 2));
@@ -135,6 +142,7 @@ async function cmdIdea() {
 async function cmdStatus() {
   const state = need(await loadState(repoPath));
   const summary = {
+    harness: state.harness || "", model: state.model || "",
     status: state.status, round: state.round, max_rounds: state.max_rounds,
     phase: state.phase, phase_index: `${PHASES.indexOf(state.phase) + 1}/${PHASES.length}`,
     tasks_open: openTasks(state).length, tasks_done: state.tasks.filter((t) => t.status === "done").length,
@@ -150,10 +158,14 @@ async function cmdStatus() {
 // guarda state.json, no se escriben work orders, no se toca events.log ni gh.
 async function cmdNext() {
   const state0 = need(await loadState(repoPath));
+  const pp = flags("print-prompt");
+  const printPrompt = pp !== undefined;
+  const wantedId = flags("task") !== undefined && flags("task") !== true ? flags("task") : (typeof pp === "string" ? pp : null);
   if (state0.status !== "running") {
     const hint = state0.status === "done"
       ? "Fábrica terminada. Ejecuta init <repo> --repo owner/repo para una nueva ejecución."
       : "Ejecuta: node sf.mjs start <repo>";
+    if (printPrompt) { console.error(`status=${state0.status}. ${hint}`); process.exitCode = 3; return; }
     console.log(JSON.stringify({ status: state0.status, round: state0.round, phase: state0.phase, tasks: [], hint }, null, 2));
     return;
   }
@@ -184,6 +196,16 @@ async function cmdNext() {
   const open = openTasks(state);
   const failedNow = failedTasks(state).map((f) => ({ id: f.id, title: f.title }));
   const base = { dry_run: dry, ...(advancePreview ? { advance: advancePreview } : {}) };
+  if (printPrompt) {
+    const t = wantedId ? open.find((x) => x.id === wantedId) : open[0];
+    if (!t) { console.error(wantedId ? `Tarea abierta no encontrada: ${wantedId}` : `Sin tareas abiertas (fase ${state.phase}).`); process.exitCode = 3; return; }
+    let prompt = t.prompt_preview ?? null;
+    if (prompt === null) { try { prompt = await readFile(t.prompt_file, "utf8"); } catch { /* pending */ } }
+    if (prompt === null) { console.error(`Sin prompt disponible para ${t.id}`); process.exitCode = 3; return; }
+    await persist();
+    process.stdout.write(prompt);
+    return;
+  }
   if (open.length === 0) {
     console.log(JSON.stringify({ status: state.status, phase: state.phase, tasks: [], failed: failedNow, ...base }, null, 2));
     return;
@@ -333,6 +355,12 @@ async function main() {
     process.exit(2);
   }
   switch (cmd) {
+    case "serve": {
+      const { startStandalone } = await import("./server.mjs");
+      const { url, repo } = await startStandalone(["--repo", repoPath, ...rest]);
+      console.log(`Software Factory panel: ${url}/ (repo ${repo})`);
+      return;
+    }
     case "init": return cmdInit();
     case "idea": return cmdIdea();
     case "status": return cmdStatus();
@@ -350,12 +378,13 @@ async function main() {
     default:
       console.log(`sf.mjs — Software Factory runner
 Comandos:
-  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--force]
+  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--harness copilot|claude|codex|opencode|gemini|vscode] [--model id] [--force]
       (sin --force no toca un estado existente; reiniciar es decision explicita)
   idea <repo> "texto"  (guarda una idea del usuario como semilla; la proxima fase plan
       la descompone en 1+ issues origin:user que pasan por grill/issues/implement igual
       que las de la auditoria; no lanza un round propio)
   start|pause|status|next <repo>
+  serve <repo> [--port N] [--allow-repo <ruta>]  (panel web standalone, alias de runner/server.mjs)
   complete <repo> <taskId> [--fail|--force]
       (done exige informe no vacio en result_file; --force es la alternativa explicita)
   issues <repo> [--dry|--dry-run]  (crea issues del draft + añade al Project; la simulacion

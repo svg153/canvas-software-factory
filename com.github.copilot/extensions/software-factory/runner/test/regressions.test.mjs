@@ -28,9 +28,8 @@ const runnerPath = join(extensionDir, "runner", "sf.mjs");
 
 // El token de acción se obtiene como la UI: leyendo el HTML servido por el propio servidor.
 async function actionTokenFrom(server) {
-  const html = await (await fetch(`http://127.0.0.1:${server.address().port}/`)).text();
-  const token = html.match(/name="sf-action-token" content="([0-9a-f]+)"/)?.[1];
-  assert.ok(token, "el HTML debe exponer el token de acción");
+  const token = (await (await fetch(`http://127.0.0.1:${server.address().port}/token`)).json()).token;
+  assert.ok(token, "/token debe entregar el token");
   return token;
 }
 
@@ -97,10 +96,11 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
-  const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`);
+  const tk = await actionTokenFrom(server);
+  const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`, { headers: { "x-sf-token": tk } });
   assert.equal((await stateResponse.json()).repo, canonicalRepo);
 
-  const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}`);
+  const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}&token=${tk}`);
   const reader = eventsResponse.body.getReader();
   const firstEvent = await reader.read();
   assert.equal(JSON.parse(new TextDecoder().decode(firstEvent.value).slice(6)).repo, canonicalRepo);
@@ -111,7 +111,7 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
@@ -158,7 +158,7 @@ test("passes the form Project owner through the action route to runner arguments
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "init", input: formPayload }),
   });
@@ -197,7 +197,7 @@ test("#88: /action difunde code y message de errores con .code propio", async (t
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "init", input: {} }),
   });
@@ -226,7 +226,7 @@ test("#88: errores sin .code siguen cayendo al código genérico sf_solicitud_fa
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "init", input: {} }),
   });
@@ -673,17 +673,17 @@ test("POST /action rejects missing or wrong CSRF token and accepts the HTML-expo
   assert.equal(response.status, 403);
   assert.match((await response.json()).error, /sf_csrf_token_invalido/);
 
-  response = await post({ "x-sf-action-token": "f".repeat(48) });
+  response = await post({ "x-sf-token": "f".repeat(48) });
   assert.equal(response.status, 403);
 
-  response = await post({ "x-sf-action-token": token });
+  response = await post({ "x-sf-token": token });
   assert.equal(response.status, 200);
   assert.deepEqual(applied, ["pause"]);
 
   // La UI debe enviar la cabecera con el mismo nombre que valida el servidor.
   const appSource = await readFile(join(extensionDir, "app.mjs"), "utf8");
-  assert.match(appSource, /x-sf-action-token/);
-  assert.match(appSource, /sf-action-token/);
+  assert.match(appSource, /x-sf-token/);
+  assert.match(appSource, /\/token/);
 
   // Cada instancia genera un token distinto.
   const server2 = createFactoryServer({
@@ -721,7 +721,7 @@ test("loopback server validates Host/Origin, caps bodies and hides paths", async
   const body = (actionName) => JSON.stringify({ actionName, input: {} });
   const post = (headers, payload = body("pause")) => fetch(`${baseUrl}/action`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-sf-action-token": token, ...headers },
+    headers: { "Content-Type": "application/json", "x-sf-token": token, ...headers },
     body: payload,
   });
   // fetch no permite forjar Host; http.request sí.
@@ -749,7 +749,7 @@ test("loopback server validates Host/Origin, caps bodies and hides paths", async
   const forgedPage = await rawRequest({ Host: `evil.example:${port}` });
   assert.equal(forgedPage.status, 403);
   assert.ok(!forgedPage.text.includes(token));
-  const forgedAction = await rawRequest({ Host: "evil.example", "x-sf-action-token": token, "Content-Type": "application/json" }, body("pause"));
+  const forgedAction = await rawRequest({ Host: "evil.example", "x-sf-token": token, "Content-Type": "application/json" }, body("pause"));
   assert.equal(forgedAction.status, 403);
   assert.equal(applied.length, 3);
 
@@ -806,6 +806,28 @@ test("full CLI cycle ends done at max_rounds without extra-round tasks", async (
   assert.deepEqual(after.tasks, []);
   assert.match(after.hint, /init/);
   assert.equal((await loadState(repo)).tasks.length, before, "next no debe emitir tareas tras done");
+});
+
+test("next --print-prompt prints only the work order; JSON mode unchanged; exit 3 when nothing to print", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-print-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  // pausada: stdout vacío, exit 3, hint por stderr
+  await run("pause", repo);
+  await assert.rejects(run("next", repo, "--print-prompt"), (e) => e.code === 3 && e.stdout === "" && /start/.test(e.stderr));
+  await run("start", repo);
+
+  const json = JSON.parse((await run("next", repo)).stdout);
+  assert.ok(json.tasks.length > 0 && json.tasks[0].prompt);
+  const plain = await run("next", repo, "--print-prompt");
+  assert.equal(plain.stdout, json.tasks[0].prompt);
+  const byId = await run("next", repo, "--print-prompt", "--task", json.tasks[0].id);
+  assert.equal(byId.stdout, json.tasks[0].prompt);
+  await assert.rejects(run("next", repo, "--print-prompt", "--task", "nope"), (e) => e.code === 3 && e.stdout === "");
 });
 
 test("start right after completing a phase's last task does not re-emit it", async (t) => {
@@ -866,7 +888,7 @@ test("start refuses a finished factory and keeps status done", async (t) => {
 });
 
 test("extension play guards a done factory via the shared startGuardError", async () => {
-  const extSource = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  const extSource = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
   assert.match(extSource, /startGuardError/);
   assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
 });
@@ -1353,6 +1375,32 @@ test("init refuses a repo directory that does not exist", async (t) => {
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
 });
 
+test("init persists harness/model, status shows them, invalid harness rejected, old state loads", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-harness-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repoPath = join(tempDir, "repo");
+  await mkdir(repoPath);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await assert.rejects(run("init", repoPath, "--harness", "mario"), (err) => err.code === 1 && /codex/.test(err.stderr));
+  assert.equal(existsSync(join(repoPath, ".software-factory", "state.json")), false);
+
+  await run("init", repoPath, "--repo", "org/repo", "--harness", "codex", "--model", "gpt-5-codex");
+  const state = await loadState(repoPath);
+  assert.equal(state.harness, "codex");
+  assert.equal(state.model, "gpt-5-codex");
+  const status = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(status.harness, "codex");
+  assert.equal(status.model, "gpt-5-codex");
+
+  delete state.harness;
+  delete state.model;
+  await saveState(repoPath, state);
+  const old = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(old.harness, "");
+  assert.equal(old.model, "");
+});
+
 test("?repo= allowlist rejects traversal, siblings and symlink escapes; accepts workspace and authorized roots", async (t) => {
   const base = await mkdtemp(join(tmpdir(), "sf-allow-"));
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -1385,10 +1433,11 @@ test("?repo= allowlist rejects traversal, siblings and symlink escapes; accepts 
   t.after(() => closeServer(server));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const token = await actionTokenFrom(server);
-  const get = (path, repo) => fetch(`${baseUrl}${routeWithRepo(path, repo)}`);
+  // Tras la fusión /state también exige token (antes solo /action en main).
+  const get = (path, repo) => fetch(`${baseUrl}${routeWithRepo(path, repo)}`, { headers: { "x-sf-token": token } });
   const post = (repo) => fetch(`${baseUrl}${routeWithRepo("/action", repo)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-sf-action-token": token },
+    headers: { "Content-Type": "application/json", "x-sf-token": token },
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
 
@@ -1464,7 +1513,8 @@ test("issue identity: number/url canonical, normalized title fallback, failed im
 });
 
 test("canvas writeStatus delegates to locked updateState and interleaved writes keep state.json parseable", async (t) => {
-  const src = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  // Tras la fusión, writeStatus vive en service.mjs y escribe bajo lock (updateState).
+  const src = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
   assert.match(src, /await updateState\(repoDir,/);
   assert.doesNotMatch(src, /writeFile/);
 
@@ -1632,7 +1682,10 @@ test("canvas and UI wire add_idea to the idea action and render seeds", async ()
   const ext = await readFile(join(extensionDir, "extension.mjs"), "utf8");
   assert.match(ext, /name: "add_idea"/);
   assert.match(ext, /applyAction\(repoDir, "idea"/);
-  assert.match(ext, /actionName === "idea"[\s\S]{0,240}ideaRunnerArgs/);
+
+  // El enrutado idea -> ideaRunnerArgs vive en service.mjs (lógica compartida).
+  const svc = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
+  assert.match(svc, /actionName === "idea"[\s\S]{0,240}ideaRunnerArgs/);
 
   const app = await readFile(join(extensionDir, "app.mjs"), "utf8");
   assert.match(app, /ideaBtn[\s\S]{0,320}action\("add_idea"/);

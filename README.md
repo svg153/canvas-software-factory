@@ -27,6 +27,20 @@ Phases: `discover → plan → grill → issues → implement → review` · rou
 
 ## Install
 
+**Universal install (any OS, any harness; Node 20+, no dependencies):**
+
+```bash
+node tools/sf-install.mjs --harness <copilot|claude|codex|opencode|generic> [--home DIR] [--dry-run]
+node tools/sf-install.mjs --harness <x> --check   # read-only; also prints `STALE: <path>` for installed runner files no longer in the repo (never deletes); exit 1 + reinstall hint if the installed copy drifts from plugin.json
+```
+
+It copies the dependency-free runner plus `SKILL.md` to the harness convention
+(`~/.copilot|.claude|.codex/skills/software-factory`, `~/.config/opencode/skill/software-factory`)
+or, for `generic`, appends an idempotent marked block to `~/AGENTS.md` (runner in
+`~/.software-factory/runner`). It is additive (never deletes), validates the source before
+writing, and records a version marker (`.sf-install.json`) used by `--check`.
+`--dry-run` lists actions without writing; `--home` overrides the home directory.
+
 **Option A — installer script (Windows):**
 
 ```powershell
@@ -121,6 +135,32 @@ A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refu
 reopen it and `next` emits no further tasks. To run a new execution, re-`init` the
 repo with `--force` (see contract below).
 
+### Headless quickstart (no Copilot App)
+
+```powershell
+# First init + start the factory, then run headless:
+node runner/sf.mjs init C:\path\to\repo --repo owner/name; node runner/sf.mjs start C:\path\to\repo
+node runner/sf-run.mjs C:\path\to\repo --harness codex [--model X] [--max-tasks 5] [--timeout 600] [--dry-run] [--yes]
+```
+
+Loop: `next` → adapter `run()` (cwd=repo) → report check → `complete` (or `complete --fail`
+with a note in `state.notes`) until no pending tasks, `--max-tasks`, or the factory is
+paused/done. Failed tasks are never retried within a run. Without `--yes` only read-only
+work orders (discover/plan/grill/review) run; `implement` tasks are listed as skipped.
+`--dry-run` prints the plan and spawns nothing. Ctrl+C leaves the task `awaiting_agent`.
+To revert work from a failed implement task: `git reset --hard <previous commit>` or
+discard the working branch.
+
+### Configuración de harness y modelo
+
+`sf.mjs init <repo> --repo o/r --harness codex --model X` guarda `harness`/`model` en
+`.software-factory/state.json`; `sf-run` los usa sin flags. Precedencia: **flags CLI > state.json > default**
+(`auto` = primer CLI disponible). Un harness o modelo inválido en config o flags falla de inmediato
+listando los ids válidos. El registro canónico (ids, binario, entrega del prompt, shim de Windows) vive
+**solo** en `runner/lib/harnesses.mjs`; `state.mjs` y `adapters/` lo importan.
+
+La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, OpenCode o Gemini CLI: instala el skill en el arnés, `sf.mjs init`, y alimenta el CLI con `sf.mjs next --print-prompt` (algunas piezas, en progreso). Matriz de CLIs, flags y quickstart en [docs/harnesses.md](docs/harnesses.md). Orden de merge del tren de PRs abiertos en [docs/merge-order.md](docs/merge-order.md).
+
 ## Runner contract (v2 semantics)
 
 - **`init` never overwrites silently.** If `<repo>/.software-factory/state.json`
@@ -185,6 +225,12 @@ repo with `--force` (see contract below).
   *your* account. Note, however, that work orders and result files are agent-written
   text and may quote repository content: review them before committing anywhere. We
   do not guarantee that no secret ever ends up in `.software-factory/`.
+- **Issue bodies are an untrusted data surface.** Anyone who can edit an issue could try
+  to inject instructions into the implementation agent. `implementPrompt` frames issue
+  content between `<<<DATO-DE-ISSUE … DATO-DE-ISSUE>>>` markers (with embedded `<<<`/`>>>`
+  neutralized), tells the agent it is content and not instructions, and requires the
+  agent to check the issue is still open, never read or emit credentials, never merge,
+  and leave the PR for human review.
 - This repo's `.gitignore` covers this repo only. When the factory targets **another**
   repo, `<repo>/.software-factory/` is *not* automatically ignored there — add it to
   that repo's `.gitignore` (or delete the folder) before committing.

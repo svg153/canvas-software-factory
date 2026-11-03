@@ -19,6 +19,8 @@ export function paths(repoPath) {
   };
 }
 
+export { HARNESS_IDS as HARNESSES } from "./harnesses.mjs";
+
 export const nowIso = () => new Date().toISOString();
 
 export function defaultState(repoPath, opts = {}) {
@@ -27,6 +29,8 @@ export function defaultState(repoPath, opts = {}) {
     repo_path: repoPath,
     project_id: opts.project || "",
     project_owner: opts.projectOwner || opts.repo?.split("/")[0] || "",
+    harness: opts.harness || "",
+    model: opts.model || "",
     status: "idle", // idle | running | paused | done
     round: 1,
     max_rounds: Number(opts.rounds ?? 3),
