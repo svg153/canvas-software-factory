@@ -25,9 +25,8 @@ const runnerPath = join(extensionDir, "runner", "sf.mjs");
 
 // El token de acción se obtiene como la UI: leyendo el HTML servido por el propio servidor.
 async function actionTokenFrom(server) {
-  const html = await (await fetch(`http://127.0.0.1:${server.address().port}/`)).text();
-  const token = html.match(/name="sf-action-token" content="([0-9a-f]+)"/)?.[1];
-  assert.ok(token, "el HTML debe exponer el token de acción");
+  const token = (await (await fetch(`http://127.0.0.1:${server.address().port}/token`)).json()).token;
+  assert.ok(token, "/token debe entregar el token");
   return token;
 }
 
@@ -87,10 +86,11 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
-  const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`);
+  const tk = await actionTokenFrom(server);
+  const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`, { headers: { "x-sf-token": tk } });
   assert.equal((await stateResponse.json()).repo, selectedRepo);
 
-  const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}`);
+  const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}&token=${tk}`);
   const reader = eventsResponse.body.getReader();
   const firstEvent = await reader.read();
   assert.match(new TextDecoder().decode(firstEvent.value), /"repo":"C:\\\\repos\\\\target & one"/);
@@ -101,7 +101,7 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
@@ -148,7 +148,7 @@ test("passes the form Project owner through the action route to runner arguments
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "init", input: formPayload }),
   });
@@ -554,17 +554,17 @@ test("POST /action rejects missing or wrong CSRF token and accepts the HTML-expo
   assert.equal(response.status, 403);
   assert.match((await response.json()).error, /sf_csrf_token_invalido/);
 
-  response = await post({ "x-sf-action-token": "f".repeat(48) });
+  response = await post({ "x-sf-token": "f".repeat(48) });
   assert.equal(response.status, 403);
 
-  response = await post({ "x-sf-action-token": token });
+  response = await post({ "x-sf-token": token });
   assert.equal(response.status, 200);
   assert.deepEqual(applied, ["pause"]);
 
   // La UI debe enviar la cabecera con el mismo nombre que valida el servidor.
   const appSource = await readFile(join(extensionDir, "app.mjs"), "utf8");
-  assert.match(appSource, /x-sf-action-token/);
-  assert.match(appSource, /sf-action-token/);
+  assert.match(appSource, /x-sf-token/);
+  assert.match(appSource, /\/token/);
 
   // Cada instancia genera un token distinto.
   const server2 = createFactoryServer({
@@ -677,7 +677,7 @@ test("start refuses a finished factory and keeps status done", async (t) => {
 });
 
 test("extension play guards a done factory via the shared startGuardError", async () => {
-  const extSource = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  const extSource = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
   assert.match(extSource, /startGuardError/);
   assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
 });
@@ -1163,4 +1163,30 @@ test("init refuses a repo directory that does not exist", async (t) => {
     return true;
   });
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
+});
+
+test("init persists harness/model, status shows them, invalid harness rejected, old state loads", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-harness-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repoPath = join(tempDir, "repo");
+  await mkdir(repoPath);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await assert.rejects(run("init", repoPath, "--harness", "mario"), (err) => err.code === 1 && /codex/.test(err.stderr));
+  assert.equal(existsSync(join(repoPath, ".software-factory", "state.json")), false);
+
+  await run("init", repoPath, "--repo", "org/repo", "--harness", "codex", "--model", "gpt-5-codex");
+  const state = await loadState(repoPath);
+  assert.equal(state.harness, "codex");
+  assert.equal(state.model, "gpt-5-codex");
+  const status = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(status.harness, "codex");
+  assert.equal(status.model, "gpt-5-codex");
+
+  delete state.harness;
+  delete state.model;
+  await saveState(repoPath, state);
+  const old = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(old.harness, "");
+  assert.equal(old.model, "");
 });

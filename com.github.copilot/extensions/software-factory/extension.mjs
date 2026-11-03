@@ -1,120 +1,26 @@
-// Software Factory canvas — panel de control de la fábrica.
-// Patrón tomado de agentic-kanban: http server + createCanvas + joinSession/session.send.
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
+// Software Factory canvas — cliente fino del SDK; la lógica vive en runner/lib/service.mjs.
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
-import { createFactoryServer } from "./runner/lib/http.mjs";
-import { initRunnerArgs, startGuardError } from "./runner/lib/actions.mjs";
+import { createFactoryService, ActionError } from "./runner/lib/service.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
+import { RUNNER } from "./runner/lib/service.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const RUNNER = join(__dirname, "runner", "sf.mjs");
-const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
-const subscribers = new Map();
 let session;
+const repoOf = (input) => input?.repo || session?.workspacePath || process.cwd();
 
-function sfPaths(repoDir) {
-  const root = join(repoDir, ".software-factory");
-  return { root, state: join(root, "state.json") };
-}
-
-async function readState(repoDir) {
-  try {
-    return JSON.parse(await readFile(sfPaths(repoDir).state, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-async function writeStatus(repoDir, status) {
-  const p = sfPaths(repoDir);
-  const state = await readState(repoDir);
-  if (!state) throw new CanvasError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
-  state.status = status;
-  state.updated_at = new Date().toISOString();
-  await mkdir(p.root, { recursive: true });
-  await writeFile(p.state, JSON.stringify(state, null, 2));
-  broadcast(repoDir, state);
-  return state;
-}
-
-function factoryPrompt(repoDir, state) {
-  return bootstrapPrompt(repoDir, RUNNER, state);
-}
-
-// Polling del state.json por repo para re-broadcast SSE. El timer se libera solo
-// cuando el repo se queda sin suscriptores (antes quedaba vivo para siempre).
-const watchers = new Map();
-function ensureWatch(repoDir) {
-  if (watchers.has(repoDir)) return;
-  const timer = setInterval(async () => {
-    if (!subscribers.get(repoDir)?.size) {
-      clearInterval(timer);
-      watchers.delete(repoDir);
-      return;
-    }
-    const state = await readState(repoDir);
-    if (state) broadcast(repoDir, state);
-  }, 2500);
-  watchers.set(repoDir, timer);
-}
-
-function broadcast(repoDir, state) {
-  const subs = subscribers.get(repoDir);
-  if (!subs) return;
-  const payload = `data: ${JSON.stringify(state)}\n\n`;
-  for (const res of subs) res.write(payload);
-}
-
-async function applyAction(repoDir, actionName, input = {}) {
-  if (actionName === "get_state") {
-    const state = await readState(repoDir);
-    return { status: state ? `${state.phase} (round ${state.round})` : "sin estado", state, notes: state?.notes || "", runner: RUNNER };
-  }
-  if (actionName === "play") {
-    const guard = startGuardError(await readState(repoDir));
-    if (guard) throw new CanvasError("sf_done", guard);
-    const state = await writeStatus(repoDir, "running");
-    if (session) await session.send({ prompt: factoryPrompt(repoDir, state) });
-    return { status: "Fábrica lanzada — el agente recibió el prompt de arranque", state };
-  }
-  if (actionName === "pause") {
-    const state = await writeStatus(repoDir, "paused");
-    return { status: "Fábrica en pausa", state };
-  }
-  if (actionName === "init") {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, ...initRunnerArgs(repoDir, input)], { windowsHide: true });
-    return { status: "inicializado", output: out.stdout.trim() };
-  }
-  if (actionName === "next") {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const out = await promisify(execFile)("node", [RUNNER, "next", repoDir], { windowsHide: true });
-    return JSON.parse(out.stdout.trim());
-  }
-  throw new CanvasError("sf_unknown_action", `Acción desconocida: ${actionName}`);
-}
-
-const server = createFactoryServer({
-  extensionDir: __dirname,
+const service = createFactoryService({
   defaultRepo: () => session?.workspacePath || process.cwd(),
-  readState,
-  ensureWatch,
-  applyAction,
-  subscribe(repoDir, res) {
-    if (!subscribers.has(repoDir)) subscribers.set(repoDir, new Set());
-    subscribers.get(repoDir).add(res);
-    res.on("close", () => subscribers.get(repoDir)?.delete(res));
+  async onPlay(repoDir, state) {
+    if (!session) return false;
+    await session.send({ prompt: bootstrapPrompt(repoDir, RUNNER, state) });
+    return true;
   },
+  playMessage: "Fábrica en running (sin sesión Copilot activa).",
 });
-
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-const baseUrl = `http://127.0.0.1:${server.address().port}`;
-
+const baseUrl = await service.listen(0);
+const applyAction = (repoDir, name, input) =>
+  service.applyAction(repoDir, name, input).catch((e) => {
+    throw e instanceof ActionError ? new CanvasError(e.code, e.message) : e;
+  });
 const factoryCanvas = createCanvas({
   id: "software-factory",
   displayName: "Software Factory",
@@ -132,21 +38,21 @@ const factoryCanvas = createCanvas({
       name: "get_state",
       description: "Devuelve el estado de la fábrica (state.json).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "get_state");
+        return applyAction(repoOf(input), "get_state");
       },
     },
     {
       name: "play",
       description: "Pone la fábrica en running y envía al agente el prompt de arranque del bucle.",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "play");
+        return applyAction(repoOf(input), "play");
       },
     },
     {
       name: "pause",
       description: "Pausa la fábrica (status=paused).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "pause");
+        return applyAction(repoOf(input), "pause");
       },
     },
     {
@@ -163,7 +69,7 @@ const factoryCanvas = createCanvas({
         },
       },
       handler({ input }) {
-        const repoDir = input?.repo || session?.workspacePath || process.cwd();
+        const repoDir = repoOf(input);
         return applyAction(repoDir, "init", {
           repo: input?.github_repo,
           project: input?.project,
@@ -176,7 +82,7 @@ const factoryCanvas = createCanvas({
       name: "next_work",
       description: "Pide al runner la siguiente tanda de work orders (fase actual).",
       handler({ input }) {
-        return applyAction(input?.repo || session?.workspacePath || process.cwd(), "next");
+        return applyAction(repoOf(input), "next");
       },
     },
   ],

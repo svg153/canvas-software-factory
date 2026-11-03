@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import {
   loadState, saveState, defaultState, logEvent, paths,
   newTask, writeWorkOrder, openTasks, failedTasks, unclaimedIssues, hasResult, PHASES,
+  HARNESSES,
 } from "./lib/state.mjs";
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
@@ -93,7 +94,13 @@ async function cmdInit() {
   const project = flags("project") || "";
   const projectOwner = flags("project-owner") || "";
   const rounds = flags("rounds") || 3;
-  const state = defaultState(repoPath, { repo, project, projectOwner, rounds });
+  const harness = flags("harness") || "";
+  const model = flags("model") || "";
+  if (harness && !HARNESSES.includes(harness)) {
+    console.error(`--harness "${harness}" no es válido. Valores permitidos: ${HARNESSES.join(", ")}.`);
+    process.exit(1);
+  }
+  const state = defaultState(repoPath, { repo, project, projectOwner, rounds, harness, model });
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
   console.log(JSON.stringify({ ok: true, sf: paths(repoPath).root, state: "idle" }, null, 2));
@@ -102,6 +109,7 @@ async function cmdInit() {
 async function cmdStatus() {
   const state = need(await loadState(repoPath));
   const summary = {
+    harness: state.harness || "", model: state.model || "",
     status: state.status, round: state.round, max_rounds: state.max_rounds,
     phase: state.phase, phase_index: `${PHASES.indexOf(state.phase) + 1}/${PHASES.length}`,
     tasks_open: openTasks(state).length, tasks_done: state.tasks.filter((t) => t.status === "done").length,
@@ -284,6 +292,12 @@ async function main() {
     process.exit(2);
   }
   switch (cmd) {
+    case "serve": {
+      const { startStandalone } = await import("./server.mjs");
+      const { url, repo } = await startStandalone(["--repo", repoPath, ...rest]);
+      console.log(`Software Factory panel: ${url}/ (repo ${repo})`);
+      return;
+    }
     case "init": return cmdInit();
     case "status": return cmdStatus();
     case "next": return cmdNext();
@@ -300,9 +314,10 @@ async function main() {
     default:
       console.log(`sf.mjs — Software Factory runner
 Comandos:
-  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--force]
+  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--harness copilot|claude|codex|opencode|gemini|vscode] [--model id] [--force]
       (sin --force no toca un estado existente; reiniciar es decision explicita)
   start|pause|status|next <repo>
+  serve <repo> [--port N] [--allow-repo <ruta>]  (panel web standalone, alias de runner/server.mjs)
   complete <repo> <taskId> [--fail|--force]
       (done exige informe no vacio en result_file; --force es la alternativa explicita)
   issues <repo> [--dry|--dry-run]  (crea issues del draft + añade al Project; la simulacion
