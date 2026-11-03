@@ -96,6 +96,22 @@ A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refu
 reopen it and `next` emits no further tasks. To run a new execution, re-`init` the
 repo with `--force` (see contract below).
 
+### Headless quickstart (no Copilot App)
+
+```powershell
+# First init + start the factory, then run headless:
+node runner/sf.mjs init C:\path\to\repo --repo owner/name; node runner/sf.mjs start C:\path\to\repo
+node runner/sf-run.mjs C:\path\to\repo --harness codex [--model X] [--max-tasks 5] [--timeout 600] [--dry-run] [--yes]
+```
+
+Loop: `next` → adapter `run()` (cwd=repo) → report check → `complete` (or `complete --fail`
+with a note in `state.notes`) until no pending tasks, `--max-tasks`, or the factory is
+paused/done. Failed tasks are never retried within a run. Without `--yes` only read-only
+work orders (discover/plan/grill/review) run; `implement` tasks are listed as skipped.
+`--dry-run` prints the plan and spawns nothing. Ctrl+C leaves the task `awaiting_agent`.
+To revert work from a failed implement task: `git reset --hard <previous commit>` or
+discard the working branch.
+
 ## Runner contract (v2 semantics)
 
 - **`init` never overwrites silently.** If `<repo>/.software-factory/state.json`

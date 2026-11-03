@@ -1,9 +1,8 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
-const KILL_GRACE_MS = 3000;
 const STDERR_TAIL = 2000;
 
 // Single matrix of harness flags. stdin:true => prompt piped via stdin; otherwise last arg.
@@ -14,6 +13,18 @@ export const HARNESSES = {
   opencode: { bin: 'opencode', base: ['run'], model: ['-m'], stdin: false, hint: 'npm i -g opencode-ai' },
   gemini: { bin: 'gemini', base: ['-p'], model: ['--model'], stdin: true, hint: 'npm i -g @google/gemini-cli' },
 };
+
+// Kills pid and all its descendants. execFn/killFn injectable for tests.
+export function killTree(pid, platform = process.platform, execFn = spawnSync, killFn = process.kill.bind(process)) {
+  if (!pid) return;
+  try {
+    if (platform === 'win32') execFn('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true });
+    else killFn(-pid, 'SIGKILL');
+  } catch { /* already gone */ }
+}
+
+const liveChildren = new Set();
+export function killAllChildren() { for (const pid of liveChildren) killTree(pid); liveChildren.clear(); }
 
 export const MODEL_PATTERN = /^[A-Za-z0-9._:/-]{1,64}$/;
 const CMD_SAFE_ARG = /^[A-Za-z0-9._:/\\\\=@+,-]+$/;
@@ -27,6 +38,18 @@ export function validateModel(model) {
 
 export function validateHarnessId(id) {
   if (!Object.prototype.hasOwnProperty.call(HARNESSES, id)) throw new Error('unknown harness: ' + String(id));
+  return id;
+}
+
+// Lets --adapter-module modules register their own harness id before createAdapter().
+// Format-validated; selection via state.json still goes through resolve()'s known-id check.
+const HARNESS_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
+export function registerHarness(id, spec) {
+  if (typeof id !== 'string' || !HARNESS_ID.test(id)) throw new Error('invalid harness id: ' + String(id));
+  if (!spec || typeof spec !== 'object' || typeof spec.bin !== 'string' || !Array.isArray(spec.base) || !Array.isArray(spec.model)) {
+    throw new Error('invalid harness spec for ' + id + ': bin/base/model required');
+  }
+  HARNESSES[id] = { ...spec };
   return id;
 }
 
@@ -64,7 +87,7 @@ export function createAdapter(id, spec) {
       return { cmd: spec.bin, args };
     },
     // `command` ({cmd,args}) lets tests substitute the binary; extra args are appended after its args.
-    run({ prompt, model, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, command, env } = {}) {
+    run({ prompt, model, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, command, env, treeKill } = {}) {
       let built;
       try { built = this.buildCommand({ prompt, model }); } catch (e) { return Promise.resolve({ ok: false, output: '', exitCode: null, error: e.message }); }
       const cmd = command ? command.cmd : built.cmd;
@@ -74,19 +97,20 @@ export function createAdapter(id, spec) {
       }
       let launch = { cmd, args };
       if (!command) { try { launch = resolveLaunch(cmd, args, env); } catch (e) { return Promise.resolve({ ok: false, output: '', exitCode: null, error: e.message }); } }
-      return spawnCollect(launch.cmd, launch.args, built.stdin, { cwd, timeoutMs, env, verbatim: launch.verbatim });
+      return spawnCollect(launch.cmd, launch.args, built.stdin, { cwd, timeoutMs, env, verbatim: launch.verbatim, treeKill });
     },
   };
 }
 
-function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, verbatim }) {
+function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, verbatim, treeKill = killTree }) {
   return new Promise((resolve) => {
     let out = '', err = '', timedOut = false, settled = false;
     let child;
-    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(killTimer); resolve(r); };
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(killTimer); if (child?.pid) liveChildren.delete(child.pid); resolve(r); };
     let timer, killTimer;
     try {
-      child = spawn(cmd, args, { cwd, env: env || process.env, shell: false, windowsVerbatimArguments: !!verbatim, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      child = spawn(cmd, args, { cwd, env: env || process.env, shell: false, windowsVerbatimArguments: !!verbatim, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+      if (child.pid) liveChildren.add(child.pid);
     } catch (e) { return resolve({ ok: false, output: '', exitCode: null, error: e.message }); }
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { err += d; });
@@ -95,8 +119,7 @@ function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, verbatim }) {
     if (stdin !== undefined) child.stdin.end(stdin); else child.stdin.end();
     timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+      treeKill(child.pid);
     }, timeoutMs);
     child.on('close', (code, signal) => {
       const tail = err.slice(-STDERR_TAIL);
