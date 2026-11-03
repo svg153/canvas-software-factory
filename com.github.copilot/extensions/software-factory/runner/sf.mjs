@@ -10,7 +10,7 @@ import {
   HARNESSES,
 } from "./lib/state.mjs";
 import {
-  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
+  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt, flattenIssueText,
 } from "./lib/prompts.mjs";
 import { createIssuesFromDraft } from "./lib/gh.mjs";
 import { startGuardError } from "./lib/actions.mjs";
@@ -44,7 +44,7 @@ const phasePlan = {
   implement: (s) => {
     return unclaimedIssues(s)
       .map((i) => ({
-        title: `Implementar #${i.number} ${i.title}`,
+        title: `Implementar #${i.number} ${flattenIssueText(i.title)}`,
         prompt: (st, t) => implementPrompt(st, t, i),
         meta: { issue: i },
       }));

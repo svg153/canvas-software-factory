@@ -4,17 +4,17 @@ La fábrica es agnóstica del arnés: el runner (`sf.mjs`) solo gestiona estado 
 Los flags **no** están hardcodeados en el runner: viven solo en este documento.
 
 > ⚠️ Los flags cambian entre versiones. Antes de usar un arnés, ejecuta `<cli> --help` y contrasta con esta tabla.
-> Las celdas marcadas ❓ **no se han verificado** aún en una ejecución real; se anotará la versión del CLI al probarlas.
+> Verificado contra `--help` solo para los CLI instalados (ver "Verificado con"); el resto queda con nota al pie ¹. El código fuente de verdad para lo que soporta la fábrica es el runner; en esta rama no existen adaptadores (`runner/lib/adapters`).
 
 ## Matriz
 
 | Arnés | Comando headless | Prompt | Modelo | Permisos / seguridad | Ruta de instalación del skill |
 |---|---|---|---|---|---|
 | `copilot` | `copilot -p "<prompt>"` | arg (`-p`) | `--model <id>` | `--allow-all-tools` (o `--allow-tool`/`--deny-tool`) | `~/.copilot/skills/software-factory/` |
-| `claude` | `claude -p` | stdin o arg | `--model <alias\|id>` | `--permission-mode acceptEdits` / `--allowedTools "<lista>"` ❓ | `~/.claude/skills/software-factory/` |
-| `codex` | `codex exec -` | stdin (`-`) o arg | `-m <id>` | `--sandbox workspace-write` / `--full-auto` ❓ | `~/.codex/` (vía `AGENTS.md`) ❓ |
-| `opencode` | `opencode run "<prompt>"` | arg | `-m <proveedor/modelo>` | permisos en `opencode.json` ❓ | `~/.config/opencode/` ❓ |
-| `gemini` | `gemini -p "<prompt>"` | arg (`-p`) o stdin | `-m <id>` | `--yolo` (aprueba todo; solo en entornos aislados) ❓ | `~/.gemini/` (vía `GEMINI.md`) ❓ |
+| `claude` | `claude -p` | stdin o arg | `--model <alias\|id>` | `--permission-mode acceptEdits` / `--allowedTools "<lista>"` ¹ | `~/.claude/skills/software-factory/` |
+| `codex` | `codex exec -` | stdin (`-`) o arg | `-m <id>` | `--sandbox workspace-write` (`read-only`, `workspace-write`, `danger-full-access`) | `~/.codex/` (vía `AGENTS.md`) |
+| `opencode` | `opencode run "<prompt>"` | arg | `-m <proveedor/modelo>` | permisos en `opencode.json`; `--auto` auto-aprueba (peligroso) | `~/.config/opencode/` |
+| `gemini` | `gemini -p "<prompt>"` | arg (`-p`) o stdin | `-m <id>` | `--yolo` (aprueba todo; solo en entornos aislados) ¹ | `~/.gemini/` (vía `GEMINI.md`) ¹ |
 | `vscode-stub` | — (stub: sin modo headless) | — | — | — | Sin instalación; solo reserva el nombre |
 
 ## Caveats conocidos por versión
@@ -27,7 +27,19 @@ Los flags **no** están hardcodeados en el runner: viven solo en este documento.
 | opencode | El modelo se expresa como `proveedor/modelo` | `opencode run --help` |
 | gemini | `--yolo` desactiva confirmaciones | `gemini --help` |
 
-Al verificar un arnés, anota aquí la versión (`<cli> --version`) y la fecha.
+## Verificado con
+
+| CLI | Versión | Fecha | Verificado con `--help` |
+|---|---|---|---|
+| copilot | 1.0.106-2 | 2026-11-02 | `-p/--prompt`, `--model`, `--allow-all-tools`, `--allow-tool`, `--deny-tool` (existen también `--allow-all`/`--yolo`) |
+| codex | codex-cli 0.155.1 | 2026-11-02 | `codex exec [PROMPT]` (stdin si no hay prompt; si ambos, stdin se añade como bloque `<stdin>`), `-m/--model`, `-s/--sandbox`. **`--full-auto` no aparece en `codex exec --help`: eliminado de la matriz** |
+| opencode | 1.18.31 | 2026-11-02 | `opencode run [message..]`, `-m/--model` (`provider/model`), `--auto` |
+| claude | — | — | ¹ |
+| gemini | — | — | ¹ |
+
+¹ Pendiente de verificación con --help (2026-11-02, máquina Windows sin claude ni gemini). Las celdas de estas filas reflejan conocimiento previo, no una prueba.
+
+Nota: la existencia de `~/.codex/`, `~/.config/opencode/` y `~/.copilot/skills/` en esta máquina es lo único comprobado sobre rutas de skills; no se ha verificado cómo cada CLI las carga.
 
 ## Quickstart headless (sin Copilot App)
 
