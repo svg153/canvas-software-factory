@@ -1,6 +1,6 @@
 // Work-order prompt templates for each factory phase.
 import { fileURLToPath } from "node:url";
-import { paths } from "./state.mjs";
+import { paths, newSeeds } from "./state.mjs";
 
 // Ruta real del runner relativa a este módulo (funciona en repo y en instalación).
 const RUNNER = fileURLToPath(new URL("../sf.mjs", import.meta.url));
@@ -46,6 +46,17 @@ export function planPrompt(state, task) {
   // El informe discover vive en el result_file de su tarea: es lo que `complete` exige.
   const discoverTask = (state.tasks || []).find((t) => t.phase === "discover" && t.round === task.round);
   const discover = discoverTask?.result_file || `${p.results}/r${task.round}-discover-*.md`;
+  const seeds = newSeeds(state);
+  const seedBlock = seeds.length
+    ? `
+
+IDEAS DEL USUARIO (semillas pendientes, PRIORITARIAS sobre la auditoría):
+${seeds.map((s) => `- [${s.id}] ${s.text}`).join("\n")}
+Descompón CADA semilla en 1 o más issues accionables del draft. Cada una de esas issues
+debe llevar en "labels" la etiqueta "user-idea" y los campos extra "origin": "user" y
+"seed_id": "<id>" (la fase issues ignora esos campos extra: solo trazan la idea de origen).
+No dupliques títulos ya creados (revisa state.json → issues).`
+    : "";
   return `# Fase ${task.round} · Plan GSD (Goal → Spec → Deliverables)
 
 Actúa como el planificador GSD de la Software Factory.
@@ -56,6 +67,7 @@ Entrega:
 2. Para cada ítem: objetivo, criterios de aceptación, archivos afectados, riesgo, y label sugerida.
 3. Escribe el plan en ${p.plan} (reemplazando la versión anterior).
 4. Escribe ${p.draft} como JSON estricto: { "issues": [ { "title", "body", "labels": [] } ] } (6–12 issues accionables, sin duplicar las ya creadas; revisa state.json → issues).
+${seedBlock}
 ${RESULTS_NOTE(state, task)}`;
 }
 
@@ -72,6 +84,11 @@ Por cada decisión relevante del plan:
 1. Objeción (qué puede salir mal / qué supuesto es frágil).
 2. Respuesta recomendada y por qué gana.
 3. Ajuste concreto al plan si procede.
+
+Las issues con label "user-idea" (ideas del usuario) se trían con el MISMO criterio que
+las de la auditoría: si una idea es débil, duplicada o inviable, se tala del draft; si
+pasa, se afina su título y criterios de aceptación. Una idea del usuario NO tiene pase
+automático.
 
 Al final: (a) revisa ${p.draft} eliminando issues débiles/duplicadas y corrigiendo títulos/criterios;
 (b) añade una sección "Decisiones tras grill-me" al final de ${p.plan}.

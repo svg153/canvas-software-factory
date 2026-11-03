@@ -36,6 +36,11 @@
   .task .t { flex:1; } .task .id { color:var(--mut); font-size:11px; }
   a { color:var(--run); text-decoration:none; } a:hover { text-decoration:underline; }
   .issue { padding:6px 0; border-bottom:1px dashed var(--line); }
+  .chip { display:inline-block; margin-left:6px; padding:1px 7px; border:1px solid var(--line); border-radius:999px; color:var(--mut); font-size:11px; }
+  .ghcols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:900px){ .ghcols{grid-template-columns:1fr;} }
+  .ghcols h3 { font-size:12px; color:var(--mut); margin:0 0 6px; font-weight:600; }
+  .ghlist { max-height:220px; overflow:auto; }
   .empty { color:var(--mut); font-style:italic; padding:8px 0; }
   #log { font-family:Consolas,monospace; font-size:12px; color:var(--mut); max-height:120px; overflow:auto; margin-top:16px; white-space:pre-wrap; }
   .init { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
@@ -50,6 +55,11 @@
   <button class="btn pause" id="pause">⏸ Pausa</button>
   <span class="status" id="status">sin estado</span>
 </header>
+<div class="round" id="repopath" title="Directorio que gestiona este panel" style="margin:-8px 0 8px"></div>
+<div class="init" id="repobar" style="margin:0 0 12px">
+  <input id="repoInput" placeholder="ruta del workspace (C:\...\mi-repo)" size="42" title="Ruta absoluta del repositorio git que quiere gestionar este panel. El host de extensiones no conoce tu sesión: escribe la ruta aquí y pulsa «Usar repo»." />
+  <button class="btn" id="setRepo" title="Aplicar la ruta escrita">Usar repo</button>
+</div>
 
 <div class="pipeline" id="pipeline"></div>
 
@@ -63,11 +73,39 @@
     <div id="issues"><div class="empty">Ninguna todavía.</div></div>
     <h2 style="margin-top:14px">Configurar</h2>
     <div class="init">
-      <input id="ghrepo" placeholder="owner/repo" size="18" />
-      <input id="project" placeholder="Project id (opcional)" size="18" />
-      <input id="projectOwner" placeholder="Project owner (opcional)" size="18" />
-      <input id="rounds" placeholder="rounds" size="6" value="3" />
-      <button class="btn" id="initBtn">Init</button>
+      <input id="ghrepo" placeholder="owner/repo" size="18" title="Repositorio en GitHub, formato owner/name (ej. svg153/canvas-software-factory)" />
+      <input id="project" placeholder="Project board ID (opc.)" size="18" title="NÚMERO del board de GitHub Project (el de su URL, p. ej. .../projects/5 → 5; o el id PVT_xxx). Vacío = sin Project. Usa «Detectar» para rellenarlo desde el repo." />
+      <button class="btn" id="detectBtn" title="Detectar owner/repo desde git remote origin y el Project vinculado al repo (gh api)">Detectar</button>
+      <input id="projectOwner" placeholder="Project owner (opc.)" size="18" title="Usuario u organización dueña del Project. Por defecto: el owner del repo." />
+      <input id="rounds" placeholder="rounds" size="6" value="3" title="Número de rounds del bucle" />
+      <label title="Sobrescribe el estado existente de .software-factory al hacer Init: perderás el progreso (tareas, issues, fase actual)."><input type="checkbox" id="forceInit" style="margin-right:4px" />Forzar reinicio</label>
+<button class="btn" id="initBtn">Init</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:16px">
+  <h2>💡 Idea del usuario (vocal idea)</h2>
+  <div class="init">
+    <input id="ideaText" placeholder="Describe tu idea: la próxima fase plan la convertirá en 1 o más issues que siguen el mismo flujo (grill → issues → Project → implement → review)" size="60" />
+    <button class="btn" id="ideaBtn">Añadir idea</button>
+  </div>
+  <div id="seeds" style="margin-top:10px"><div class="empty">Ninguna idea todavía.</div></div>
+</div>
+
+<div class="panel" style="margin-top:16px">
+  <h2>GitHub — trabajo existente (#90)
+    <button class="btn" id="ghBtn" style="float:right;padding:4px 12px;font-size:12px" title="Lee issues y PRs abiertos del repo en GitHub (gh issue/pr list). Solo lectura.">Actualizar GitHub</button>
+    <button class="btn" id="importBtn" style="float:right;margin-right:8px;padding:4px 12px;font-size:12px" title="Vincula las issues abiertas al run para que la fase «issues» no las duplique. Escribe en state.json.">Importar abiertas</button>
+  </h2>
+  <div class="ghcols">
+    <div>
+      <h3>Issues abiertas</h3>
+      <div id="ghIssues" class="ghlist"><div class="empty">Pulsa «Actualizar GitHub» para verlas.</div></div>
+    </div>
+    <div>
+      <h3>PRs abiertos</h3>
+      <div id="ghPulls" class="ghlist"><div class="empty">Pulsa «Actualizar GitHub» para verlos.</div></div>
     </div>
   </div>
 </div>

@@ -14,20 +14,49 @@ export function hostnameOf(hostHeader) {
   return m ? m[1] : null;
 }
 
-async function readJsonBody(req) {
-  let data = "";
-  for await (const chunk of req) data += chunk;
-  return data ? JSON.parse(data) : {};
+export const MAX_BODY_BYTES = 64 * 1024;
+
+class HttpError extends Error {
+  constructor(status, code) {
+    super(code);
+    this.status = status;
+    this.code = code;
+  }
 }
+
+async function readJsonBody(req) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, "sf_body_demasiado_grande");
+    chunks.push(chunk);
+  }
+  const data = Buffer.concat(chunks).toString("utf8");
+  try {
+    return data ? JSON.parse(data) : {};
+  } catch {
+    throw new HttpError(400, "sf_json_invalido");
+  }
+}
+
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors *",
+};
 
 export function createFactoryServer({
   extensionDir,
   defaultRepo,
+  resolveRepo = (requested) => {
+    if (requested) throw new HttpError(400, "sf_repo_no_permitido");
+    return defaultRepo();
+  },
   readState,
   ensureWatch,
   applyAction,
   subscribe,
-  resolveRepo,
   allowHosts = [],
 }) {
   const allowed = new Set([...LOOPBACK_HOSTS, ...allowHosts.map((h) => h.toLowerCase())]);
@@ -55,14 +84,26 @@ export function createFactoryServer({
     if (typeof header !== "string" || header.length !== actionToken.length) return false;
     return timingSafeEqual(Buffer.from(header, "utf8"), Buffer.from(actionToken, "utf8"));
   };
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
+    const writeHead = res.writeHead.bind(res);
+    res.writeHead = (status, ...rest) => {
+      for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
+      return writeHead(status, ...rest);
+    };
     try {
       const serverPort = req.socket.localPort;
       if (!hostAllowed(req.headers.host, serverPort)) return deny(res, 403, "sf_host_no_permitido");
       if (req.headers.origin && !originAllowed(req.headers.origin, serverPort)) return deny(res, 403, "sf_origen_no_permitido");
       const requestUrl = new URL(req.url, "http://127.0.0.1");
-      const requestedRepo = requestUrl.searchParams.get("repo");
       const path = requestUrl.pathname;
+      let repoDir;
+      if (path === "/state" || path === "/events" || path === "/action") {
+        try {
+          repoDir = resolveRepo(requestUrl.searchParams.get("repo") || "");
+        } catch {
+          throw new HttpError(400, "sf_repo_no_permitido");
+        }
+      }
 
       if (req.method === "GET" && path === "/") {
         const html = await readFile(join(extensionDir, "index.html"), "utf8");
@@ -91,7 +132,6 @@ export function createFactoryServer({
         const supplied = req.headers[ACTION_TOKEN_HEADER] ?? (path === "/events" ? requestUrl.searchParams.get("token") : undefined);
         if (!tokenOk(supplied)) return deny(res, path === "/action" ? 403 : 401, "sf_csrf_token_invalido");
       }
-      const repoDir = resolveRepo ? resolveRepo(requestedRepo || defaultRepo()) : requestedRepo || defaultRepo();
       if (req.method === "GET" && (path === "/ui.mjs" || path === "/app.mjs")) {
         res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
         res.end(await readFile(join(extensionDir, path.slice(1))));
@@ -117,6 +157,8 @@ export function createFactoryServer({
         return;
       }
       if (req.method === "POST" && path === "/action") {
+        // Defensa en profundidad (main): un POST cross-site nunca debe actuar, aunque lleve token.
+        if (req.headers["sec-fetch-site"] === "cross-site") return deny(res, 403, "sf_origen_no_permitido");
         const body = await readJsonBody(req);
         const result = await applyAction(repoDir, body.actionName, body.input || {});
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -126,8 +168,21 @@ export function createFactoryServer({
       res.writeHead(404);
       res.end();
     } catch (error) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }));
+      if (!(error instanceof HttpError)) console.error("[software-factory] request failed:", error);
+      const status = error instanceof HttpError ? error.status : 400;
+      // #88: errores intencionales con .code propio (CanvasError) difunden código y mensaje;
+      // los errores crudos (p. ej. ENOENT con rutas internas) siguen reducidos al código genérico
+      // para no filtrar paths (bloqueado por el test de seguridad de /action).
+      const ownCode = !(error instanceof HttpError) && typeof error?.code === "string";
+      const code = error instanceof HttpError || ownCode ? error.code : "sf_solicitud_fallida";
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      res.writeHead(status, { "Content-Type": "application/json" });
+      const message = ownCode ? String(error?.message || "").slice(0, 300) : "";
+      res.end(JSON.stringify(message && message !== code ? { error: code, message } : { error: code }));
     }
   });
+  return server;
 }

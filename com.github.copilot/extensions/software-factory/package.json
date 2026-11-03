@@ -1,8 +1,11 @@
 {
   "name": "software-factory-canvas",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "type": "module",
   "main": "extension.mjs",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test"
   },

@@ -9,13 +9,16 @@ const PHASE_LABELS = {
 };
 const TASK_STATUSES = new Set(["pending", "awaiting_agent", "done", "failed"]);
 
-export function createInitPayload({ repo, project, projectOwner, rounds }) {
-  return {
+export function createInitPayload({ repo, project, projectOwner, rounds, force }) {
+  const payload = {
     repo,
     project,
     project_owner: projectOwner,
     rounds,
   };
+  // #88: force solo viaja si está activo, para no alterar el contrato init existente.
+  if (force) payload.force = true;
+  return payload;
 }
 
 export function routeWithRepo(path, repo) {
@@ -35,6 +38,66 @@ function issueHref(value) {
     return url.protocol === "https:" ? url.href : null;
   } catch {
     return null;
+  }
+}
+
+export function renderGithub(result, doc = document) {
+  // Contenido no confiable (títulos de terceros): siempre textContent; enlaces solo https.
+  const issueList = doc.getElementById("ghIssues");
+  issueList.replaceChildren();
+  const issues = Array.isArray(result?.issues) ? result.issues : [];
+  if (!issues.length) {
+    appendEmpty(issueList, "Sin issues abiertas (pulsa «Actualizar GitHub»).", doc);
+  }
+  for (const issue of issues) {
+    const row = doc.createElement("div");
+    row.className = "issue";
+    const href = issueHref(issue.url);
+    const link = doc.createElement(href ? "a" : "span");
+    if (href) {
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    link.textContent = `#${String(issue.number ?? "")} ${String(issue.title ?? "")}`;
+    row.appendChild(link);
+    for (const label of Array.isArray(issue.labels) ? issue.labels : []) {
+      const chip = doc.createElement("span");
+      chip.className = "chip";
+      chip.textContent = String(label);
+      row.appendChild(chip);
+    }
+    issueList.appendChild(row);
+  }
+
+  const pullList = doc.getElementById("ghPulls");
+  pullList.replaceChildren();
+  const pulls = Array.isArray(result?.pulls) ? result.pulls : [];
+  if (!pulls.length) {
+    appendEmpty(pullList, "Sin PRs abiertos (pulsa «Actualizar GitHub»).", doc);
+  }
+  for (const pr of pulls) {
+    const row = doc.createElement("div");
+    row.className = "issue";
+    const href = issueHref(pr.url);
+    const link = doc.createElement(href ? "a" : "span");
+    if (href) {
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    link.textContent = `#${String(pr.number ?? "")} ${String(pr.title ?? "")}`;
+    row.appendChild(link);
+    const meta = doc.createElement("span");
+    meta.className = "chip";
+    const flags = [
+      pr.isDraft ? "draft" : "",
+      pr.mergeable === "CONFLICTING" ? "conflictos" : "",
+      pr.checks && pr.checks !== "none" ? pr.checks : "",
+    ].filter(Boolean);
+    meta.textContent = flags.join(" · ") || "abierto";
+    row.appendChild(meta);
+    pullList.appendChild(row);
   }
 }
 
@@ -125,5 +188,25 @@ export function renderState(state, doc = document) {
     }
   } else {
     appendEmpty(issueList, "Ninguna todavía.", doc);
+  }
+
+  // Ideas del usuario (semillas). Se muestra solo si el contenedor existe: los tests
+  // de render usan un doc mínimo sin este id y no deben romperse.
+  const seedList = doc.getElementById("seeds");
+  if (seedList) {
+    seedList.replaceChildren();
+    const seeds = Array.isArray(state?.seeds) ? state.seeds : [];
+    if (seeds.length) {
+      for (const seed of seeds) {
+        const row = doc.createElement("div");
+        row.className = "issue";
+        const label = doc.createElement("span");
+        label.textContent = `[${String(seed.status ?? "new")}] ${String(seed.text ?? "")}`;
+        row.appendChild(label);
+        seedList.appendChild(row);
+      }
+    } else {
+      appendEmpty(seedList, "Ninguna idea todavía.", doc);
+    }
   }
 }

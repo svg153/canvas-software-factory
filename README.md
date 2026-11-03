@@ -9,7 +9,7 @@ reviews/audits the round, and repeats for a bounded number of rounds.
 
 | Component | Path | Purpose |
 |---|---|---|
-| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, Play/Pause. Play sends the kick-off prompt to the session agent via `session.send`. |
+| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, seeds (user ideas), Play/Pause and an idea box. Play sends the kick-off prompt to the session agent via `session.send`. |
 | Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase and executes the mechanical `issues` phase (`gh issue create` + `gh project item-add`). |
 | Skill | `skills/software-factory/SKILL.md` | The loop contract the agent follows (phases, subagents, rules). |
 
@@ -82,14 +82,27 @@ skip the update confirmation and `-CopilotHome <path>` to install into a differe
 home (the test suite uses this so it never touches your real install). Then reload
 extensions in the app (or restart it).
 
-**Option B — manual:** copy `com.github.copilot/extensions/software-factory/` to
+**Option B — direct from GitHub (recommended, no clone):** ask Copilot in the
+GitHub Copilot app (same pattern used by awesome-copilot canvases):
+
+```text
+Install this extension: https://github.com/svg153/canvas-software-factory/tree/main/com.github.copilot/extensions/software-factory
+```
+
+Copilot downloads the committed folder into `~/.copilot/extensions/software-factory`
+(replacing the previous copy), generates `canvas.json` from the manifests and reloads
+extensions. To **update after merging to `main`**, ask again with the same URL (or run
+Option A from a refreshed clone). The skill (`skills/software-factory`) is not part of
+the canvas folder: install it with Option A or copy it manually.
+
+**Option C — manual:** copy `com.github.copilot/extensions/software-factory/` to
 `<COPILOT_HOME>/extensions/software-factory/`, generate its `canvas.json` with
 `node tools/make-canvas-manifest.mjs . <COPILOT_HOME>/extensions/software-factory`,
 and copy `skills/software-factory/` to `<COPILOT_HOME>/skills/software-factory/`.
 
 **Option C — awesome-copilot:** once accepted as an external plugin, install it from
 the catalog with one click. To propose it, open an external-plugin submission issue in
-`github/awesome-copilot` pointing at a release tag + commit SHA of this repo.
+`github/awesome-copilot` pointing at the release tag `v0.1.1` and the commit SHA it resolves to (`git rev-parse v0.1.1^{commit}`).
 
 ## Use
 
@@ -99,11 +112,23 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
   --repo owner/name --project <project-number> --rounds 3
 # Add --project-owner <owner> if the Project belongs to a different owner
 
-# 2. Open the "Software Factory" canvas (pass repo=<absolute path> as input
-#    if the factory should target a repo other than the session workspace).
+# 2. Open the "Software Factory" canvas. The extension host is not bound to a chat
+#    session, so the panel starts without a repo: type the absolute path of your
+#    git workspace in the "Repo" field and press "Usar repo" (or open the canvas
+#    with input.repo=<absolute path> if your client supports passing open input).
+#    On "Usar repo" the panel auto-detects owner/repo from `git remote origin` and
+#    the GitHub Project linked to the repo (single match fills "Project board ID"
+#    and owner; several are listed in the log). "Detectar" repeats this on demand.
 
 # 3. ▶ Play. Watch the pipeline; the agent executes work orders and marks them done.
 #    ⏸ Pause anytime. State lives in <repo>/.software-factory/.
+
+# 4. (Optional) Inject your own idea — "vocal idea". Type it in the canvas idea box
+#    (or run the CLI below) at any moment. It is stored as a *seed* and the NEXT
+#    `plan` phase decomposes it into 1+ issues (label `user-idea`, `origin: user`)
+#    that go through grill → issues → Project → implement → review exactly like the
+#    audit issues. It never launches its own round.
+node ~/.copilot/extensions/software-factory/runner/sf.mjs idea C:\path\to\repo "mi idea"
 ```
 
 A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refuse to
@@ -172,6 +197,17 @@ La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, Op
 - **`state.json` is written atomically** (unique temp file + rename): a crash mid
   write leaves the previous state intact. It does not protect against concurrent
   lost updates; drive one factory per repo from one process at a time.
+- **User ideas are seeds that ride the rounds.** `idea <repo> "<text>"` (canvas
+  `add_idea`) appends a seed `{ id, text, origin: user, status: new, created_at }`
+  to `state.seeds`; it does not create issues or start a round. The runner (not the
+  agent) owns the lifecycle transitions inside `advance()`: leaving `plan` flips
+  `new → planned`, leaving `grill` flips `planned → triaged`. `planPrompt` only
+  materializes seeds still in `new`. A **cutoff guard** makes this race-safe: when
+  leaving `plan`, only seeds with `created_at <= <plan work order's created_at>`
+  are consumed, so an idea added *after* the current plan was emitted stays `new`
+  and is picked up by the next round's plan instead of being silently marked done.
+  Extra draft fields (`origin`, `seed_id`) are ignored by `createIssuesFromDraft`,
+  and title de-duplication against `state.issues` means a seed can never double-create.
 - **No simulation mode in production.** Nothing in `sf.mjs` or `lib/gh.mjs` reads an
   environment variable to divert `gh` calls, and no state entry is ever marked as
   simulated: a previous `SF_FAKE_GH` hook was removed because its entries polluted
@@ -220,13 +256,37 @@ awesome-copilot gate is not executed here),
 generates the install-target `canvas.json` with
 `tools/make-canvas-manifest.mjs`, and runs the install suite on `windows-latest`.
 
+## Governance & releases
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the release process (merge a version bump to
+`main` and `release.yml` tags and publishes it, verifying versions, CHANGELOG and the
+skill) and the branch-protection checklist for maintainers, and [SECURITY.md](SECURITY.md)
+for vulnerability reporting. Check an installation against the repo with
+`.\install.ps1 -Check` (exit 1 on drift). Branch protection on `main` is configured in
+repo settings, not in code.
+
 ## Limitations (verified, not promised)
+
+- No `package-lock.json` is committed (the runner uses only Node built-ins; the SDK
+  dependency is pinned exactly and `engines.node >=20` is declared).
 
 - The installer updates files in place but does not remove files deleted upstream; a
   file that no longer exists in the source can linger in the install target.
 - `install.ps1` uses Windows-style paths; on Linux/macOS use the manual install.
 - Canvas discovery relies on the generated `canvas.json` and the app's extension host,
   which this repo does not ship or control.
+- El servidor loopback del canvas valida `Host` (solo `127.0.0.1:<puerto>`/`localhost:<puerto>`),
+  rechaza `Origin` externo o `Sec-Fetch-Site: cross-site` en `POST /action`, limita el body a
+  64 KB, envía `X-Content-Type-Options: nosniff` y CSP, y no expone rutas locales en errores.
+  No es autenticación de usuario: cualquier proceso local sigue pudiendo leer el token del HTML.
+- `?repo=` (en `/state`, `/events`, `/action`) y `input.repo` de las acciones del canvas aceptan
+  rutas absolutas existentes (resueltas con `realpath`, así que `..` y symlinks que escapan se
+  normalizan). Una ruta dentro del workspace de la sesión, de `SF_ALLOWED_ROOTS` o autorizada al
+  abrir el canvas pasa siempre; además, el panel permite escribir cualquier ruta que sea un
+  **workspace git** (contiene `.git`) — necesario porque el host de extensiones no está ligado a
+  una sesión de chat y la app no siempre puede pasar `input.repo`. Las escrituras fuera de un git
+  se rechazan con `sf_repo_no_permitido` sin tocar disco. Mitigaciones: servidor solo en
+  `127.0.0.1`, token CSRF por instancia y validación de `Host`/`Origin`.
 
 ## Repo layout notes
 

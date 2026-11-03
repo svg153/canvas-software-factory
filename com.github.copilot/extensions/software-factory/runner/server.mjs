@@ -42,7 +42,9 @@ export async function startStandalone(argv) {
     playMessage: STANDALONE_PLAY_HINT,
     allowHosts,
     resolveRepo(requested) {
-      const target = resolve(requested);
+      // Sin ?repo= se usa el repo por defecto (mismo contrato que createRepoAllowlist:
+      // resolve("") -> defaultRepo); con ?repo= se valida contra la allowlist.
+      const target = resolve(requested || repo);
       // realpath en ambos lados: evita bypass por symlinks o prefijos léxicos.
       const real = realOrSelf(target);
       if (!allow.some((root) => inside(realOrSelf(root), real))) throw new Error("repo fuera de la allowlist (--allow-repo)");

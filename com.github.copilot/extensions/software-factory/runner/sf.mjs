@@ -5,14 +5,14 @@ import { resolve } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
-  loadState, saveState, defaultState, logEvent, paths,
+  loadState, saveState, defaultState, logEvent, paths, nowIso,
   newTask, writeWorkOrder, openTasks, failedTasks, unclaimedIssues, hasResult, PHASES,
   HARNESSES,
 } from "./lib/state.mjs";
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt, flattenIssueText,
 } from "./lib/prompts.mjs";
-import { createIssuesFromDraft } from "./lib/gh.mjs";
+import { createIssuesFromDraft, validateInitInputs } from "./lib/gh.mjs";
 import { startGuardError } from "./lib/actions.mjs";
 
 const [, , cmd, repoArg = ".", ...rest] = process.argv;
@@ -94,6 +94,11 @@ async function cmdInit() {
   const project = flags("project") || "";
   const projectOwner = flags("project-owner") || "";
   const rounds = flags("rounds") || 3;
+  const inputErrors = validateInitInputs({ repo, project, projectOwner });
+  if (inputErrors.length) {
+    for (const m of inputErrors) console.error(m);
+    process.exit(1);
+  }
   const harness = flags("harness") || "";
   const model = flags("model") || "";
   if (harness && !HARNESSES.includes(harness)) {
@@ -104,6 +109,34 @@ async function cmdInit() {
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
   console.log(JSON.stringify({ ok: true, sf: paths(repoPath).root, state: "idle" }, null, 2));
+}
+
+// Idea del usuario ("vocal idea"): se guarda como semilla y la próxima fase plan la
+// descompone en 1+ issues del draft (origin:user). No lanza un round por sí sola:
+// viaja encajada en los rounds existentes.
+async function cmdIdea() {
+  const state = need(await loadState(repoPath));
+  const text = (rest[0] || "").trim();
+  if (!text) {
+    console.error('Idea vacía. Uso: node sf.mjs idea <repo> "texto de la idea"');
+    process.exit(1);
+  }
+  state.seeds = state.seeds || [];
+  const seed = {
+    id: `seed${state.seeds.length + 1}`,
+    text,
+    origin: "user",
+    round_added: state.round,
+    status: "new", // new -> planned (sale de plan) -> triaged (sale de grill)
+    created_at: nowIso(),
+  };
+  state.seeds.push(seed);
+  await logEvent(repoPath, `idea seed ${seed.id} (round ${state.round}): ${text.slice(0, 80)}`);
+  await saveState(repoPath, state);
+  console.log(JSON.stringify(
+    { ok: true, seed, note: "la próxima fase plan la materializará en 1 o más issues" },
+    null, 2,
+  ));
 }
 
 async function cmdStatus() {
@@ -204,6 +237,7 @@ async function advance(state, { dryRun = isDryRun() } = {}) {
       persistState: dryRun ? async () => {} : () => saveState(work.repo_path, work),
     });
     preview.issues = created;
+    preview.failures = created.failures;
     if (!dryRun) await logEvent(work.repo_path, `issues phase: ${created.length} issues`);
   }
   if (work.phase === "review") {
@@ -226,6 +260,21 @@ async function advance(state, { dryRun = isDryRun() } = {}) {
       await saveState(work.repo_path, work);
     }
     return preview;
+  }
+  // Semillas de usuario: al salir de plan, las "new" que ya existían cuando se emitió
+  // el work order de plan pasan a "planned" (una idea añadida a mitad de round no se
+  // marca como consumida: espera a la próxima fase plan). Al salir de grill, "planned"
+  // -> "triaged" (ya superó la autocrítica). La deduplicación por título en la fase
+  // issues evita duplicados si una idea llegara a re-planificarse.
+  if (work.phase === "plan") {
+    const planTask = (work.tasks || []).find((t) => t.phase === "plan" && t.round === work.round);
+    const cutoff = planTask?.created_at;
+    for (const s of work.seeds || []) {
+      if (s.status === "new" && (!cutoff || s.created_at <= cutoff)) s.status = "planned";
+    }
+  }
+  if (work.phase === "grill") {
+    for (const s of work.seeds || []) if (s.status === "planned") s.status = "triaged";
   }
   const idx = PHASES.indexOf(work.phase);
   work.phase = PHASES[idx + 1] || PHASES[0];
@@ -290,7 +339,7 @@ async function cmdIssues() {
   }
   console.log(JSON.stringify({
     ok: true, dry_run: dry,
-    created: created.length, urls: created,
+    created: created.length, urls: created, failures: created.failures,
   }, null, 2));
 }
 
@@ -313,6 +362,7 @@ async function main() {
       return;
     }
     case "init": return cmdInit();
+    case "idea": return cmdIdea();
     case "status": return cmdStatus();
     case "next": return cmdNext();
     case "complete": return cmdComplete();
@@ -330,6 +380,9 @@ async function main() {
 Comandos:
   init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--harness copilot|claude|codex|opencode|gemini|vscode] [--model id] [--force]
       (sin --force no toca un estado existente; reiniciar es decision explicita)
+  idea <repo> "texto"  (guarda una idea del usuario como semilla; la proxima fase plan
+      la descompone en 1+ issues origin:user que pasan por grill/issues/implement igual
+      que las de la auditoria; no lanza un round propio)
   start|pause|status|next <repo>
   serve <repo> [--port N] [--allow-repo <ruta>]  (panel web standalone, alias de runner/server.mjs)
   complete <repo> <taskId> [--fail|--force]
