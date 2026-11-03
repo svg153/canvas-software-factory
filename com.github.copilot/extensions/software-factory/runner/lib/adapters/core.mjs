@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
-const KILL_GRACE_MS = 3000;
 const STDERR_TAIL = 2000;
 
 // Single matrix of harness flags. stdin:true => prompt piped via stdin; otherwise last arg.
@@ -50,19 +49,19 @@ export function createAdapter(id, spec) {
       return { cmd: spec.bin, args };
     },
     // `command` ({cmd,args}) lets tests substitute the binary; extra args are appended after its args.
-    run({ prompt, model, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, command, env } = {}) {
+    run({ prompt, model, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, command, env, treeKill } = {}) {
       const built = this.buildCommand({ prompt, model });
       const cmd = command ? command.cmd : built.cmd;
       const args = command ? [...(command.args || []), ...built.args] : built.args;
       if (!command && !this.available(env)) {
         return Promise.resolve({ ok: false, output: '', exitCode: null, error: `${id} CLI ('${spec.bin}') not found on PATH. Install: ${spec.hint}` });
       }
-      return spawnCollect(cmd, args, built.stdin, { cwd, timeoutMs, env, shell: !command && process.platform === 'win32' });
+      return spawnCollect(cmd, args, built.stdin, { cwd, timeoutMs, env, treeKill, shell: !command && process.platform === 'win32' });
     },
   };
 }
 
-function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, shell }) {
+function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, shell, treeKill = killTree }) {
   return new Promise((resolve) => {
     let out = '', err = '', timedOut = false, settled = false;
     let child;
@@ -79,8 +78,7 @@ function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, shell }) {
     if (stdin !== undefined) child.stdin.end(stdin); else child.stdin.end();
     timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+      treeKill(child.pid);
     }, timeoutMs);
     child.on('close', (code, signal) => {
       const tail = err.slice(-STDERR_TAIL);
