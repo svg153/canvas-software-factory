@@ -1,4 +1,5 @@
-import { HARNESSES, createAdapter, DEFAULT_TIMEOUT_MS } from './core.mjs';
+import { HARNESSES, pickHarness, validateHarnessConfig } from '../harnesses.mjs';
+import { createAdapter, DEFAULT_TIMEOUT_MS } from './core.mjs';
 
 export { DEFAULT_TIMEOUT_MS };
 
@@ -22,8 +23,8 @@ export const getAdapter = get;
 
 // idOrAuto: explicit id, 'auto' (state.harness, else first available), or falsy (same as auto).
 export function resolve(idOrAuto, state = {}) {
-  let id = idOrAuto;
-  if (!id || id === 'auto') id = state && state.harness && state.harness !== 'auto' ? state.harness : null;
+  const id = pickHarness(idOrAuto, state && state.harness);
+  validateHarnessConfig({ harness: id, model: state && state.model }, 'state.json');
   if (!id) {
     const found = list().map(get).find((a) => a.available());
     if (!found) throw new Error(`No harness CLI available. Known: ${list().join(', ')}`);

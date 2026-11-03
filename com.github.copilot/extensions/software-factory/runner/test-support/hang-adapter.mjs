@@ -2,7 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { createAdapter } from "../lib/adapters/core.mjs";
 
-const real = createAdapter("hang", { bin: "node", base: [], model: [], stdin: false, hint: "n/a" });
+const real = createAdapter("claude", { bin: "node", base: [], model: [], stdin: false, hint: "n/a" });
 export default {
   id: "hang",
   available: () => true,
