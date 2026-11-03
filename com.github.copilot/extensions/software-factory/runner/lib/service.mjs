@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { createFactoryServer } from "./http.mjs";
-import { initRunnerArgs, ideaRunnerArgs, startGuardError } from "./actions.mjs";
+import { initRunnerArgs, ideaRunnerArgs, intakeRunnerArgs, startGuardError } from "./actions.mjs";
 import { deriveGithubRepo } from "./git.mjs";
 import { listLinkedProjects, getGithubStatus, importOpenIssues } from "./gh.mjs";
 import { saveState, updateState } from "./state.mjs";
@@ -117,6 +117,11 @@ export function createFactoryService({ defaultRepo, onPlay, resolveRepo, playMes
     }
     if (actionName === "idea" || actionName === "add_idea") {
       const out = await run("node", [RUNNER, ...ideaRunnerArgs(repoDir, input)], { windowsHide: true });
+      return JSON.parse(out.stdout.trim());
+    }
+    if (actionName === "intake") {
+      // Ingesta del repo (#56): issues/PRs/Project ya abiertos → state.inventory.
+      const out = await run("node", [RUNNER, ...intakeRunnerArgs(repoDir)], { windowsHide: true });
       return JSON.parse(out.stdout.trim());
     }
     if (actionName === "github_status") {

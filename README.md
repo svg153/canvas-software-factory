@@ -9,7 +9,7 @@ reviews/audits the round, and repeats for a bounded number of rounds.
 
 | Component | Path | Purpose |
 |---|---|---|
-| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, seeds (user ideas), Play/Pause and an idea box. Play sends the kick-off prompt to the session agent via `session.send`. |
+| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, seeds (user ideas), repo inventory (intake), Play/Pause, an idea box and an "Ingestar repo" button. Play sends the kick-off prompt to the session agent via `session.send`. |
 | Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase and executes the mechanical `issues` phase (`gh issue create` + `gh project item-add`). |
 | Skill | `skills/software-factory/SKILL.md` | The loop contract the agent follows (phases, subagents, rules). |
 
@@ -129,6 +129,15 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 #    that go through grill → issues → Project → implement → review exactly like the
 #    audit issues. It never launches its own round.
 node ~/.copilot/extensions/software-factory/runner/sf.mjs idea C:\path\to\repo "mi idea"
+
+# 5. (Optional) Continue a "half-done" repo. If the repo already has open issues,
+#    open PRs and Project items, run an *intake* before round 1 (or press the canvas
+#    "Ingestar repo" button). It reads them with `gh` (read-only, resilient: a failing
+#    source degrades to [] with a note) into `state.inventory`. `discover`/`plan` then
+#    fold the roadmap around what is already open and never recreate existing issues.
+#    To keep working an existing issue, put its real `number` in the draft item and the
+#    `issues` phase adopts it (records it in state.issues without calling gh create).
+node ~/.copilot/extensions/software-factory/runner/sf.mjs intake C:\path\to\repo
 ```
 
 A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refuse to
@@ -208,6 +217,18 @@ La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, Op
   and is picked up by the next round's plan instead of being silently marked done.
   Extra draft fields (`origin`, `seed_id`) are ignored by `createIssuesFromDraft`,
   and title de-duplication against `state.issues` means a seed can never double-create.
+- **Repo intake continues a half-done repo.** `intake <repo>` (canvas `run_intake`)
+  calls `readRepoInventory`: `gh issue list`/`gh pr list` (open, up to 200) and, when a
+  Project is configured, `gh project item-list`, storing a snapshot in `state.inventory`
+  (`{ fetched_at, issues, prs, project, notes }`). It is **read-only and resilient**: each
+  source that fails degrades to `[]` with a note and never throws, so intake can't break
+  the loop; only an invalid `owner/name` slug throws (and `cmdIntake` catches it into a
+  note). `discoverPrompt`/`planPrompt` (round 1) consume the inventory to prioritize
+  closing/advancing open work and to avoid recreating existing issues. `createIssuesFromDraft`
+  **adopts** a draft item that carries a real numeric `number`: it records the issue in
+  `state.issues` (flagged `adopted: true`) and adds it to the Project **without** calling
+  `gh issue create`, de-duplicating by title *and* number, and in `--dry` it only previews.
+  A new issue must never carry a `number`.
 - **No simulation mode in production.** Nothing in `sf.mjs` or `lib/gh.mjs` reads an
   environment variable to divert `gh` calls, and no state entry is ever marked as
   simulated: a previous `SF_FAKE_GH` hook was removed because its entries polluted

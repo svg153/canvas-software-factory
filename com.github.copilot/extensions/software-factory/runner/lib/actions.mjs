@@ -23,3 +23,9 @@ export function ideaRunnerArgs(repoDir, input = {}) {
   const text = typeof input.idea === "string" ? input.idea.trim() : "";
   return ["idea", repoDir, text];
 }
+
+// Args para la ingesta mecánica del repo (snapshot de issues/PRs/Project abiertos).
+// Sin argumentos extra: `sf.mjs intake <repoDir>`.
+export function intakeRunnerArgs(repoDir) {
+  return ["intake", repoDir];
+}
