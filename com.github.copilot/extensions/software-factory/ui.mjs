@@ -209,4 +209,35 @@ export function renderState(state, doc = document) {
       appendEmpty(seedList, "Ninguna idea todavía.", doc);
     }
   }
+
+  // Ingesta del repo: snapshot de trabajo abierto (issues/PRs/Project). Solo si el
+  // contenedor existe (los tests de render usan un doc mínimo sin este id).
+  const invEl = doc.getElementById("inventory");
+  if (invEl) {
+    invEl.replaceChildren();
+    const inv = state?.inventory;
+    if (inv) {
+      const issues = Array.isArray(inv.issues) ? inv.issues : [];
+      const prs = Array.isArray(inv.prs) ? inv.prs : [];
+      const project = Array.isArray(inv.project) ? inv.project : [];
+      const head = doc.createElement("div");
+      head.className = "issue";
+      head.textContent = `Issues abiertas: ${issues.length} · PRs abiertas: ${prs.length} · Items Project: ${project.length}`;
+      invEl.appendChild(head);
+      for (const it of issues.slice(0, 20)) {
+        const row = doc.createElement("div");
+        row.className = "issue";
+        row.textContent = `#${it.number} ${it.title}`;
+        invEl.appendChild(row);
+      }
+      for (const pr of prs.slice(0, 20)) {
+        const row = doc.createElement("div");
+        row.className = "issue";
+        row.textContent = `PR #${pr.number} ${pr.title}`;
+        invEl.appendChild(row);
+      }
+    } else {
+      appendEmpty(invEl, "Sin ingesta todavía (pulsa Ingestar repo).", doc);
+    }
+  }
 }

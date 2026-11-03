@@ -93,6 +93,8 @@ document.getElementById("ideaBtn").onclick = async () => {
   if (!result.error) input.value = "";
 };
 
+document.getElementById("intakeBtn").onclick = () => action("run_intake");
+
 function showRepoPath(text) {
   const repoPathEl = document.getElementById("repopath");
   if (!repoPathEl) return;

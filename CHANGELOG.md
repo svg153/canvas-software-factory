@@ -91,6 +91,17 @@
   waits for the next round's plan. `planPrompt`/`grillPrompt`, the canvas UI
   (seeds panel), the `software-factory` skill and the README document the flow.
   Covered by 7 new regression tests.
+- **Repo intake (continue a half-done repo).** A new `intake <repo>` runner command and
+  `run_intake` canvas action call `readRepoInventory`, which reads the repo's open
+  issues, open PRs and (when configured) Project items via `gh` into `state.inventory`.
+  It is read-only and resilient: each failing source degrades to `[]` with a note and
+  never throws, so intake can't break the loop. The round-1 `discover` and `plan` work
+  orders consume the inventory to fold the roadmap around already-open work and to avoid
+  recreating existing issues. `createIssuesFromDraft` now **adopts** a draft item that
+  carries a real numeric `number`: it records the issue in `state.issues` (flagged
+  `adopted: true`) and adds it to the Project *without* calling `gh issue create`,
+  de-duplicating by title and number, and only previews under `--dry`. The canvas shows
+  an "Ingestar repo" button and an inventory panel. Covered by 11 new regression tests.
 
 ## v0.1.1
 

@@ -7,7 +7,6 @@ import { createRepoAllowlist } from "./runner/lib/allowlist.mjs";
 import { bootstrapPrompt } from "./runner/lib/prompts.mjs";
 import { RUNNER } from "./runner/lib/service.mjs";
 
-let session;
 const defaultRepo = () => session?.workspacePath || process.cwd();
 const allowlist = createRepoAllowlist({ defaultRepo });
 // El host de extensiones no es una sesión de chat: su cwd/workspacePath no es un repo.
@@ -139,6 +138,35 @@ const factoryCanvas = createCanvas({
         // repoFrom() ya resuelve: input.repo → allowlist.resolve().
         const repoDir = repoFrom(input);
         return applyAction(repoDir, "idea", { idea: input?.idea });
+      },
+    },
+    {
+      name: "run_intake",
+      description:
+        "Ingesta del repo: lee con gh el trabajo YA abierto (issues abiertas, PRs abiertas e items del Project) y lo guarda en state.inventory. Es de solo lectura y resiliente. Discover/plan (round 1) lo usan para continuar un repo 'a medias' y no recrear issues existentes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+        },
+      },
+      handler({ input }) {
+        const repoDir = input?.repo || session?.workspacePath || process.cwd();
+        return applyAction(repoDir, "intake");
+      },
+    },
+    {
+      name: "run_intake",
+      description:
+        "Ingesta del repo: lee con gh el trabajo YA abierto (issues abiertas, PRs abiertas e items del Project) y lo guarda en state.inventory. Es de solo lectura y resiliente. Discover/plan (round 1) lo usan para continuar un repo 'a medias' y no recrear issues existentes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+        },
+      },
+      handler({ input }) {
+        return applyAction(repoFrom(input), "intake");
       },
     },
     {
