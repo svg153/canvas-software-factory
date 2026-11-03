@@ -11,7 +11,7 @@ import {
 import {
   discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
 } from "./lib/prompts.mjs";
-import { createIssuesFromDraft, validateInitInputs } from "./lib/gh.mjs";
+import { createIssuesFromDraft, readRepoInventory, validateInitInputs } from "./lib/gh.mjs";
 import { startGuardError } from "./lib/actions.mjs";
 
 const [, , cmd, repoArg = ".", ...rest] = process.argv;
@@ -128,6 +128,42 @@ async function cmdIdea() {
   await saveState(repoPath, state);
   console.log(JSON.stringify(
     { ok: true, seed, note: "la próxima fase plan la materializará en 1 o más issues" },
+    null, 2,
+  ));
+}
+
+async function cmdIntake() {
+  const state = need(await loadState(repoPath));
+  // Snapshot mecánico del trabajo ya abierto (issues/PRs/Project). readRepoInventory
+  // degrada cada fuente que falla a [] con nota; solo lanza si el repo no es owner/name.
+  let inventory;
+  try {
+    inventory = await readRepoInventory(state);
+  } catch (e) {
+    inventory = {
+      fetched_at: nowIso(), issues: [], prs: [], project: [],
+      notes: `ingesta fallida: ${e.message}`,
+    };
+  }
+  state.inventory = inventory;
+  state.updated_at = nowIso();
+  await logEvent(
+    repoPath,
+    `intake: ${inventory.issues.length} issues abiertas, ${inventory.prs.length} PRs abiertas, ` +
+      `${inventory.project.length} items de Project`,
+  );
+  await saveState(repoPath, state);
+  console.log(JSON.stringify(
+    {
+      ok: true,
+      inventory: {
+        issues: inventory.issues.length,
+        prs: inventory.prs.length,
+        project: inventory.project.length,
+        notes: (inventory.notes || "").trim(),
+      },
+      note: "discover/plan (round 1) usarán el inventario; adopta issues abiertas poniendo su number en el draft",
+    },
     null, 2,
   ));
 }
@@ -335,6 +371,7 @@ async function main() {
   switch (cmd) {
     case "init": return cmdInit();
     case "idea": return cmdIdea();
+    case "intake": return cmdIntake();
     case "status": return cmdStatus();
     case "next": return cmdNext();
     case "complete": return cmdComplete();
@@ -355,6 +392,11 @@ Comandos:
   idea <repo> "texto"  (guarda una idea del usuario como semilla; la proxima fase plan
       la descompone en 1+ issues origin:user que pasan por grill/issues/implement igual
       que las de la auditoria; no lanza un round propio)
+  intake <repo>  (leer con gh el trabajo YA abierto del repo: issues abiertas, PRs abiertas
+      e items del Project; lo guarda en state.inventory. Es de SOLO LECTURA y resiliente
+      (una fuente que falla se degrada a [] con nota). discover/plan (round 1) lo usan para
+      continuar un repo "a medias" y NO recrear issues existentes; para adoptar una issue
+      abierta ya creada, pon su number real en el draft y issues la registra sin crear otra)
   start|pause|status|next <repo>
   complete <repo> <taskId> [--fail|--force]
       (done exige informe no vacio en result_file; --force es la alternativa explicita)

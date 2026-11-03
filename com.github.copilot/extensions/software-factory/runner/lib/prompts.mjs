@@ -10,6 +10,15 @@ const RESULTS_NOTE = (state, task) =>
   `Cuando termines, guarda el resultado en ${task.result_file} (crear/actualizar el archivo con contenido no vacío). ` +
   `Reporta con: node "${RUNNER}" complete "${state.repo_path}" ${task.id}`;
 
+// Muestra (como mucho) n líneas "- #<number> <title>" de una lista del inventario.
+function invLines(items, n = 30) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return [];
+  return list.slice(0, n).map((it) => `- #${it.number} ${it.title}`).concat(
+    list.length > n ? [`- … (${list.length - n} más en state.inventory)`] : [],
+  );
+}
+
 // Prompt de arranque que el canvas envía a la sesión del agente.
 export function bootstrapPrompt(repoDir, runnerPath, state) {
   return [
@@ -27,6 +36,22 @@ export function bootstrapPrompt(repoDir, runnerPath, state) {
 }
 
 export function discoverPrompt(state, task) {
+  const inv = state.inventory;
+  const invBlock = inv
+    ? `
+
+TRABAJO YA ABIERTO EN EL REPO (ingesta previa — tenlo en cuenta, NO propongas recrear lo que ya existe):
+Issues abiertas: ${inv.issues?.length || 0}
+${invLines(inv.issues).join("\n")}
+PRs abiertas: ${inv.prs?.length || 0}
+${invLines(inv.prs).join("\n")}
+Items del Project: ${inv.project?.length || 0}
+Prioriza CERRAR/AVANZAR lo abierto (PRs sin revisar, issues bloqueadas o a medio hacer) además de
+las nuevas debilidades: el objetivo es continuar un repo "a medias" de forma autónoma.`
+    : `
+
+(Si el repo puede tener trabajo abierto previo y state.inventory es null, carga el inventario
+antes de auditar: node "${RUNNER}" intake "${state.repo_path}" — o pulsa "Ingestar repo" en el canvas.)`;
   return `# Fase ${task.round} · Descubrimiento (auditoría del repo)
 
 Eres el auditor de la Software Factory para ${state.repo || state.repo_path}.
@@ -37,6 +62,7 @@ Analiza el repo (_stack_, tests, CI, lint, deuda, seguridad, docs) y devuelve:
 3. 3 "apuestas rápidas" (quick wins) y 3 mejoras estructurales.
 4. Riesgos de seguridad (usa la skill de seguridad si está disponible).
 5. Estado de la documentación y del GitHub Project actual.
+${invBlock}
 
 ${RESULTS_NOTE(state, task)}`;
 }
@@ -57,6 +83,23 @@ debe llevar en "labels" la etiqueta "user-idea" y los campos extra "origin": "us
 "seed_id": "<id>" (la fase issues ignora esos campos extra: solo trazan la idea de origen).
 No dupliques títulos ya creados (revisa state.json → issues).`
     : "";
+  const inv = state.inventory;
+  const invBlock = inv
+    ? `
+
+TRABAJO ABIERTO EXISTENTE (NO lo recrees; adóptalo):
+Issues abiertas en el repo:
+${invLines(inv.issues).join("\n") || "- (ninguna)"}
+PRs abiertas en el repo:
+${invLines(inv.prs).join("\n") || "- (ninguna)"}
+Reglas:
+- NO creees una issue nueva cuyo título ya esté en state.inventory.issues ni en state.json → issues.
+- Si el plan debe CONTINUAR una issue ya abierta, añade al draft un ítem con su "number" real,
+  p.ej. { "title": "<mismo título>", "body": "…", "number": 123 }. La fase issues la ADOPTA
+  (la registra en state.issues sin crear duplicado) y la fase implement la toma como tarea.
+- NUNCA pongas "number" en issues nuevas: solo en las ya existentes que quieras adoptar.
+- Da prioridad en el roadmap a cerrar/avanzar PRs abiertas e issues a medio hacer.`
+    : "";
   return `# Fase ${task.round} · Plan GSD (Goal → Spec → Deliverables)
 
 Actúa como el planificador GSD de la Software Factory.
@@ -67,7 +110,7 @@ Entrega:
 2. Para cada ítem: objetivo, criterios de aceptación, archivos afectados, riesgo, y label sugerida.
 3. Escribe el plan en ${p.plan} (reemplazando la versión anterior).
 4. Escribe ${p.draft} como JSON estricto: { "issues": [ { "title", "body", "labels": [] } ] } (6–12 issues accionables, sin duplicar las ya creadas; revisa state.json → issues).
-${seedBlock}
+${seedBlock}${invBlock}
 ${RESULTS_NOTE(state, task)}`;
 }
 
