@@ -120,6 +120,8 @@ discard the working branch.
 listando los ids válidos. El registro canónico (ids, binario, entrega del prompt, shim de Windows) vive
 **solo** en `runner/lib/harnesses.mjs`; `state.mjs` y `adapters/` lo importan.
 
+La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, OpenCode o Gemini CLI: instala el skill en el arnés, `sf.mjs init`, y alimenta el CLI con `sf.mjs next --print-prompt` (algunas piezas, en progreso). Matriz de CLIs, flags y quickstart en [docs/harnesses.md](docs/harnesses.md).
+
 ## Runner contract (v2 semantics)
 
 - **`init` never overwrites silently.** If `<repo>/.software-factory/state.json`
