@@ -43,6 +43,18 @@ export function validateHarnessId(id) {
   return id;
 }
 
+// Lets --adapter-module modules register their own harness id before createAdapter().
+// Format-validated; selection via state.json still goes through resolve()'s known-id check.
+const HARNESS_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
+export function registerHarness(id, spec) {
+  if (typeof id !== 'string' || !HARNESS_ID.test(id)) throw new Error('invalid harness id: ' + String(id));
+  if (!spec || typeof spec !== 'object' || typeof spec.bin !== 'string' || !Array.isArray(spec.base) || !Array.isArray(spec.model)) {
+    throw new Error('invalid harness spec for ' + id + ': bin/base/model required');
+  }
+  HARNESSES[id] = { ...spec };
+  return id;
+}
+
 // Never uses a shell. npm .cmd/.bat shims on Windows need cmd.exe, so every argv is strictly allow-listed first.
 export function resolveLaunch(cmd, args, env) {
   if (process.platform !== 'win32' || path.isAbsolute(cmd) === false && !/^[\w.-]+$/.test(cmd)) return { cmd, args };
