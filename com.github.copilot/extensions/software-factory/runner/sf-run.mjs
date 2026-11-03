@@ -108,7 +108,7 @@ export async function runFactory({
   return summary;
 }
 
-export const USAGE = "Uso: node sf-run.mjs <repo> [--harness <id>] [--model X] [--max-tasks N] [--timeout SEG] [--dry-run] [--yes]\n  --harness/--model  opcionales: flags > state.json (init --harness/--model) > auto.\n  --timeout SEG  límite total en segundos (número > 0); al expirar mata el árbol del harness y sale con 124. Por defecto: sin límite global.\n  Ctrl+C/SIGTERM mata el árbol del harness y sale con 130.";
+export const USAGE = "Uso: node sf-run.mjs <repo> [--harness <id>] [--model X] [--max-tasks N] [--timeout SEG] [--dry-run] [--yes]\n  --harness/--model  opcionales: flags > state.json (init --harness/--model) > auto.\n  --timeout SEG  límite total en segundos (número > 0); al expirar mata el árbol del harness y sale con 124. Por defecto: sin límite global.\n  Ctrl+C/SIGTERM mata el árbol del harness y sale con 130.\n  El límite por tarea también mata el árbol completo (taskkill /T /F en Windows, kill del grupo de procesos en POSIX).";
 
 // Validates raw CLI values; returns { error } or the parsed options.
 export function validateOptions(o) {

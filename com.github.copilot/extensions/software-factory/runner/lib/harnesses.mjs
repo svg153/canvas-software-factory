@@ -12,7 +12,7 @@ export const HARNESSES = {
 
 export const HARNESS_IDS = Object.keys(HARNESSES);
 
-export const MODEL_PATTERN = /^[A-Za-z0-9._:/-]{1,64}$/;
+export const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
 
 // Throws a clear error for an unknown/non-headless harness or a malformed model; '' / undefined mean "not set".
 export function validateHarnessConfig({ harness, model } = {}, source = 'config') {

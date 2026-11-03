@@ -9,7 +9,7 @@ test('no harness spec uses a shell', () => {
 });
 
 test('malicious model from state.json is rejected before any launch', async () => {
-  for (const model of ['x&calc', 'a|b', 'a"b', '%PATH%', 'x;y']) {
+  for (const model of ['x&calc', 'a|b', 'a"b', '%PATH%', 'x;y', '--help', '-x', '--dangerously-skip']) {
     assert.throws(() => validateHarnessConfig({ model }, 'state.json'), /Invalid model/);
     assert.throws(() => resolve('copilot', { model }), /Invalid model/);
     const r = await createAdapter('copilot', HARNESSES.copilot).run({ prompt: 'p', model, command: { cmd: process.execPath, args: ['-e', 'process.exit(9)'] } });

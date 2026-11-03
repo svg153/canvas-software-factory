@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { list, get, resolve } from '../lib/adapters/index.mjs';
+import { killTree } from '../lib/adapters/core.mjs';
 
 const fake = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'test-support', 'fake-harness.mjs');
 const command = { cmd: process.execPath, args: [fake] };
@@ -75,4 +76,13 @@ test('vscode is a stub', async () => {
   const r = await a.run({ prompt: 'p' });
   assert.equal(r.ok, false);
   assert.match(r.error, /not supported headless/);
+});
+
+test('per-task timeout kills the whole tree via killTree', async () => {
+  const killed = [];
+  const r = await get('gemini').run({ prompt: 'p', command, timeoutMs: 200, env: { ...process.env, FAKE_MODE: 'hang' }, treeKill: (pid) => { killed.push(pid); killTree(pid); } });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /timed out/);
+  assert.equal(killed.length, 1);
+  assert.ok(Number.isInteger(killed[0]) && killed[0] > 0);
 });

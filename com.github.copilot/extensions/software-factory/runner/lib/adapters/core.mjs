@@ -4,7 +4,6 @@ import path from 'node:path';
 import { HARNESSES, MODEL_PATTERN } from '../harnesses.mjs';
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
-const KILL_GRACE_MS = 3000;
 const STDERR_TAIL = 2000;
 
 export { HARNESSES };
@@ -70,7 +69,7 @@ export function createAdapter(id, spec) {
       return { cmd: spec.bin, args };
     },
     // `command` ({cmd,args}) lets tests substitute the binary; extra args are appended after its args.
-    run({ prompt, model, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, command, env } = {}) {
+    run({ prompt, model, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, command, env, treeKill } = {}) {
       let built;
       try { built = this.buildCommand({ prompt, model }); } catch (e) { return Promise.resolve({ ok: false, output: '', exitCode: null, error: e.message }); }
       const cmd = command ? command.cmd : built.cmd;
@@ -80,12 +79,12 @@ export function createAdapter(id, spec) {
       }
       let launch = { cmd, args };
       if (!command) { try { launch = resolveLaunch(cmd, args, env); } catch (e) { return Promise.resolve({ ok: false, output: '', exitCode: null, error: e.message }); } }
-      return spawnCollect(launch.cmd, launch.args, built.stdin, { cwd, timeoutMs, env, verbatim: launch.verbatim });
+      return spawnCollect(launch.cmd, launch.args, built.stdin, { cwd, timeoutMs, env, verbatim: launch.verbatim, treeKill });
     },
   };
 }
 
-function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, verbatim }) {
+function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, verbatim, treeKill = killTree }) {
   return new Promise((resolve) => {
     let out = '', err = '', timedOut = false, settled = false;
     let child;
@@ -102,8 +101,7 @@ function spawnCollect(cmd, args, stdin, { cwd, timeoutMs, env, verbatim }) {
     if (stdin !== undefined) child.stdin.end(stdin); else child.stdin.end();
     timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+      treeKill(child.pid);
     }, timeoutMs);
     child.on('close', (code, signal) => {
       const tail = err.slice(-STDERR_TAIL);
