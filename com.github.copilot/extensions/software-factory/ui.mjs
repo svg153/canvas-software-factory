@@ -45,8 +45,20 @@ export function renderState(state, doc = document) {
   doc.getElementById("round").textContent = state?.round
     ? `round ${state.round} / ${state.max_rounds}`
     : "";
-
+  // Live dot y contadores del header (patrón agent-radar: color + animación de estado).
+  // Defensivo: el doc puede no exponer esos ids (entornos de test mínimos).
   const tasks = Array.isArray(state?.tasks) ? state.tasks : [];
+  const live = doc.getElementById("live");
+  if (live) live.className = `live ${state?.status || "off"}`;
+  const counters = [
+    ["sWorking", (task) => task.status === "awaiting_agent"],
+    ["sDone", (task) => task.status === "done"],
+    ["sFailed", (task) => task.status === "failed"],
+  ];
+  for (const [id, match] of counters) {
+    const element = doc.getElementById(id);
+    if (element) element.textContent = String(tasks.filter(match).length);
+  }
   const tasksByPhase = new Map();
   for (const task of tasks) {
     const phaseTasks = tasksByPhase.get(task.phase) || [];

@@ -6,33 +6,56 @@ let events = null;
 
 function log(message) {
   const element = document.getElementById("log");
-  element.textContent += `${message}\n`;
+  const row = document.createElement("div");
+  row.className = "line"
+    + (/^⚠|^error/.test(message) ? " err" : /^✔/.test(message) ? " ok" : "");
+  const ts = document.createElement("span");
+  ts.className = "ts";
+  ts.textContent = new Date().toLocaleTimeString();
+  const body = document.createElement("span");
+  body.className = "msg";
+  body.textContent = message;
+  row.appendChild(ts);
+  row.appendChild(body);
+  element.appendChild(row);
   element.scrollTop = element.scrollHeight;
 }
 
 // Token CSRF expuesto por el servidor en el HTML (meta sf-action-token).
 const actionToken = document.querySelector('meta[name="sf-action-token"]')?.content || "";
 
-async function action(actionName, input = {}) {
-  const response = await fetch(routeWithRepo("/action", repo), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-sf-action-token": actionToken },
-    body: JSON.stringify({ actionName, input }),
-  });
-  const result = await response.json();
-  if (result.error) log(`⚠ ${result.error}`);
-  else log(`✔ ${result.status || JSON.stringify(result).slice(0, 120)}`);
-  return result;
+async function action(actionName, input = {}, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const response = await fetch(routeWithRepo("/action", repo), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-sf-action-token": actionToken },
+      body: JSON.stringify({ actionName, input }),
+    });
+    const result = await response.json();
+    if (result.error) log(`⚠ ${result.error}`);
+    else log(`✔ ${result.status || JSON.stringify(result).slice(0, 120)}`);
+    return result;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
-document.getElementById("play").onclick = () => action("play");
-document.getElementById("pause").onclick = () => action("pause");
-document.getElementById("initBtn").onclick = () => action("init", createInitPayload({
-  repo: document.getElementById("ghrepo").value,
-  project: document.getElementById("project").value,
-  projectOwner: document.getElementById("projectOwner").value,
-  rounds: Number(document.getElementById("rounds").value) || 3,
-}));
+document.getElementById("play").onclick = () => action("play", {}, document.getElementById("play"));
+document.getElementById("pause").onclick = () => action("pause", {}, document.getElementById("pause"));
+document.getElementById("initBtn").onclick = () => {
+  const ghrepo = document.getElementById("ghrepo").value.trim();
+  if (ghrepo && !/^[\w.-]+\/[\w.-]+$/.test(ghrepo)) {
+    log("⚠ owner/repo no válido: usa el formato owner/name (ej. svg153/mi-repo)");
+    return undefined;
+  }
+  return action("init", createInitPayload({
+    repo: ghrepo,
+    project: document.getElementById("project").value,
+    projectOwner: document.getElementById("projectOwner").value,
+    rounds: Number(document.getElementById("rounds").value) || 3,
+  }), document.getElementById("initBtn"));
+};
 
 function showRepoPath(text) {
   const repoPathEl = document.getElementById("repopath");
