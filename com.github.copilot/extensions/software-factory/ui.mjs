@@ -1,3 +1,5 @@
+// Copia vigilada: la fuente autoritativa es runner/lib/state.mjs (PHASES).
+// El test de #32 (runner/test/ui-gaps.test.mjs) falla si ambas divergen.
 const PHASES = ["discover", "plan", "grill", "issues", "implement", "review"];
 const PHASE_LABELS = {
   discover: "Descubrimiento",
