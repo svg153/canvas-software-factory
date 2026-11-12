@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- Fallos de creación de issues reintentables (#27): `createIssuesFromDraft` clasifica cada
+  error como transitorio (rate limit, 5xx, red) o determinista y guarda `transient`,
+  `attempts` y `last_at` en `state.issue_failures`. Los transitorios se reintentan hasta
+  3 veces (con reinicio de intentos tras 24 h); los deterministas se siguen saltando de
+  forma permanente. Además, la fase `issues` queda bloqueada (`preview.blocked =
+  {reason: "issue_creation_retry"}`) si todavía hay fallos reintenables, de modo que el
+  bucle no avanza a `implement` con 0 issues creados; al agotar o no quedar fallos, la
+  fase avanza registrando el resultado.
+
 ### Changed
 - `PHASES` con fuente de verdad única (#32): el runner ya importaba el `PHASES` exportado
   por `runner/lib/state.mjs`; la copia local de `ui.mjs` queda declarada como vigilada y
