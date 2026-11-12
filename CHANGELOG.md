@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.1.7
+
+### Added
+- Flujo por olas: el runner ya no emite todos los work orders de `implement` de golpe;
+  solo libera issues cuyas dependencias están `done` (evita conflictos al mezclar).
+  Nuevo módulo canónico `runner/lib/graph.mjs` (refs por id o número, ruptura de
+  ciclos, olas topológicas, columnas del tablero) con `blocked` visible en `sf next`.
+- `depends_on` en el draft de plan: cada issue lleva `id` + `depends_on`, persistidos
+  y normalizados a números reales de issue al crearlos (`gh.mjs` / `rebuildGraph`).
+- Tablero kanban estilo GitHub Project en el canvas: pestañas «Tablero | Grafo | Orden
+  de merge». El grafo se dibuja en SVG por olas (de arriba a abajo); el tablero replica
+  las columnas Backlog/Todo/In Progress/In Review/Done.
+- Crear/sincronizar el GitHub Project desde el canvas (botones «Crear tablero» y
+  «Sincronizar»): `gh project create` idempotente + `syncProjectStatuses` vía acciones
+  nuevas `create_project` / `sync_project` (runner service + extension).
+
+### Changed
+- Prompts y contrato (SKILL.md/README): plan debe emitir grafo de dependencias, grill
+  lo audita (ciclos/refs huérfanos), implement solo toca issues liberados por el runner
+  y encadena ramas sobre el base de su ola.
+- Cerrar la fase `implement` anota las issues bloqueadas restantes en `state.notes`
+  sin impedir el avance, igual que las fallidas.
+
+### Tests
+- Nuevos: `graph.test.mjs` (12), `board-ui.test.mjs` (4), `wave-gating.test.mjs` (e2e
+  de liberación ola a ola). Suite completa: 156 extensión + 8 desktop.
+
 ## v0.1.6
 
 ### Added
