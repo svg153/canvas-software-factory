@@ -332,3 +332,75 @@ test("extension.mjs: ramas github_status/import_issues (#90)", () => {
   // El fallo de importación se traduce a mensaje fijo: nada del estado del run al exterior.
   assert.match(svc, /no se pudieron vincular las issues/);
 });
+
+test("app.mjs: la tarjeta de arranque se colapsa al haber fábrica y tras play/init", async () => {
+  const running = await runApp({ search: "?repo=C%3A%5Cx" });
+  assert.equal(running.els.startCard.hidden, true);
+  assert.equal(running.els.configToggle.textContent, "Ajustes");
+  assert.equal(running.els.configToggle.ariaExpanded, "false");
+
+  const fresh = await runApp({ state: { status: "missing" } });
+  assert.notEqual(fresh.els.startCard?.hidden, true);
+  await fresh.els.play.onclick();
+  assert.equal(fresh.els.startCard.hidden, true);
+  fresh.els.configToggle.onclick();
+  assert.equal(fresh.els.startCard.hidden, false);
+  assert.equal(fresh.els.configToggle.ariaExpanded, "true");
+});
+
+test("app.mjs: rounds fuera de rango avisa y se ajusta al rango 1..10", async () => {
+  const { els, calls } = await runApp();
+  els.ghrepo.value = "o/r";
+  els.rounds.value = "-5";
+  await els.initBtn.onclick();
+  assert.equal(JSON.parse(calls.at(-1).opts.body).input.rounds, 1);
+  assert.match(els.log.textContent, /rounds fuera de rango \(-5\): se usa 1/);
+});
+
+test("app.mjs: Enter envía carpeta y configuración sin tocar botones", async () => {
+  const { els, calls } = await runApp();
+  els.repoInput.value = "C:\\x";
+  await els.repoInput.onkeydown({ key: "Enter" });
+  assert.ok(calls.some((c) => c.url === "/state?repo=C%3A%5Cx"));
+  assert.match(els.log.textContent, /repo asignado: C:\\x/);
+  const before = calls.length;
+  els.repoInput.onkeydown({ key: "Escape" });
+  assert.equal(calls.length, before);
+  els.ghrepo.value = "o/r";
+  await els.ghrepo.onkeydown({ key: "Enter" });
+  assert.match(calls.at(-1).url, /^\/action/);
+  assert.equal(JSON.parse(calls.at(-1).opts.body).actionName, "init");
+});
+
+test("app.mjs: SSE caído muestra «desconectado» y la recuperación lo anuncia", async () => {
+  const { els, sources } = await runApp();
+  sources[0].onerror();
+  assert.equal(els.status.textContent, "desconectado");
+  assert.match(els.status.className, /\boff\b/);
+  assert.match(els.live.className, /\boff\b/);
+  sources[0].onmessage({ data: JSON.stringify({ status: "running", phase: "plan" }) });
+  assert.equal(els.status.textContent, "running");
+  assert.match(els.log.textContent, /conexión SSE recuperada/);
+});
+
+test("app.mjs: errores de acción y de carga aparecen en el banner inline", async () => {
+  const bad = await runApp({
+    fetchImpl: async (url) => ({ json: async () => (url.startsWith("/action") ? { error: "sf_csrf_token_invalido" } : { status: "running" }) }),
+  });
+  assert.notEqual(bad.els.actionError?.hidden, false);
+  await bad.els.play.onclick();
+  assert.equal(bad.els.actionError.hidden, false);
+  assert.match(bad.els.actionError.textContent, /sf_csrf_token_invalido/);
+
+  const down = await runApp({ fetchImpl: async () => { throw new Error("boom"); } });
+  assert.equal(down.els.actionError.hidden, false);
+  assert.match(down.els.actionError.textContent, /boom/);
+});
+
+test("app.mjs: la línea pre-flight describe las consecuencias del arranque", async () => {
+  const { els } = await runApp({ search: "?repo=C%3A%5Cx" });
+  assert.match(els.preFlight.textContent, /Al arrancar se crearán issues y PRs en el repo configurado, hasta 3 rounds/);
+  els.ghrepo.value = "o/r";
+  els.ghrepo.oninput();
+  assert.match(els.preFlight.textContent, /se crearán issues y PRs en o\/r, hasta 3 rounds/);
+});

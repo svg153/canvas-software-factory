@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Canvas panel redesigned to match the awesome-copilot reference canvases (#85): host-theme
+  variables with light/dark fallback, live status dot and per-state counters in the header,
+  pipeline phases as a connected stepper, task rows as cards, and the log as a timestamped
+  feed. Accessibility: `aria-live` regions, `focus-visible` outlines, `prefers-reduced-motion`,
+  state dots distinguished by color *and* shape. Action buttons now disable while a request is
+  in flight and init validates the `owner/repo` format. DOM ids and action payloads unchanged.
+
+
 ## v0.1.7
 
 ### Added

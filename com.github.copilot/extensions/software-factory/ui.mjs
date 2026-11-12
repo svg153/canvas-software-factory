@@ -211,8 +211,20 @@ export function renderState(state, doc = document, closedNumbers = null) {
   doc.getElementById("round").textContent = state?.round
     ? `round ${state.round} / ${state.max_rounds}`
     : "";
-
+  // Live dot y contadores del header (patrón agent-radar: color + animación de estado).
+  // Defensivo: el doc puede no exponer esos ids (entornos de test mínimos).
   const tasks = Array.isArray(state?.tasks) ? state.tasks : [];
+  const live = doc.getElementById("live");
+  if (live) live.className = `live ${state?.status || "off"}`;
+  for (const [id, match] of [
+    ["sWorking", (task) => task.status === "awaiting_agent"],
+    ["sDone", (task) => task.status === "done"],
+    ["sFailed", (task) => task.status === "failed"],
+  ]) {
+    const element = doc.getElementById(id);
+    if (element) element.textContent = String(tasks.filter(match).length);
+  }
+
   const tasksByPhase = new Map();
   for (const task of tasks) {
     const phaseTasks = tasksByPhase.get(task.phase) || [];
@@ -253,6 +265,7 @@ export function renderState(state, doc = document, closedNumbers = null) {
       const dot = doc.createElement("span");
       const taskStatus = TASK_STATUSES.has(task.status) ? task.status : "pending";
       dot.className = `dot ${taskStatus}`;
+      dot.ariaHidden = "true"; // el estado ya se lee en el texto id · status
       row.appendChild(dot);
 
       const title = doc.createElement("span");
@@ -267,7 +280,9 @@ export function renderState(state, doc = document, closedNumbers = null) {
       taskList.appendChild(row);
     }
   } else {
-    appendEmpty(taskList, `Fase ${state?.phase || "—"} sin tareas (pulsa Play o next).`, doc);
+    appendEmpty(taskList, state
+      ? `Fase ${state.phase || "—"} sin tareas. Espera la siguiente fase o pulsa «Arrancar».`
+      : "Sin fábrica iniciada: sin tareas todavía. Asigna la carpeta y pulsa «Arrancar».", doc);
   }
 
   const issueList = doc.getElementById("issues");
@@ -286,6 +301,7 @@ export function renderState(state, doc = document, closedNumbers = null) {
         link.rel = "noopener noreferrer";
       }
       link.textContent = `#${String(issue.number ?? "")} ${String(issue.title ?? "")}`;
+      link.title = link.textContent;
       row.appendChild(link);
       issueList.appendChild(row);
     }

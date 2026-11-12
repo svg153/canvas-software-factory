@@ -3,8 +3,12 @@ import { createInitPayload, renderGithub, renderState, routeWithRepo } from "/ui
 const params = new URLSearchParams(location.search);
 let repo = params.get("repo") || "";
 let events = null;
+let sseDown = false;
+let loadSeq = 0;
+let repoSeq = 0;
 let lastState = null;
 let lastGithub = null;
+const LOG_CAP = 200;
 
 // Números de issue conocidos por el state que ya NO están entre las abiertas de
 // GitHub: alimentan la columna Done del tablero (solo si hay lectura reciente).
@@ -25,8 +29,65 @@ function renderAll() {
 
 function log(message) {
   const element = document.getElementById("log");
-  element.textContent += `${message}\n`;
+  const row = document.createElement("div");
+  row.className = "line"
+    + (/^⚠|^error/.test(message) ? " err" : /^✔/.test(message) ? " ok" : "");
+  const ts = document.createElement("span");
+  ts.className = "ts";
+  ts.textContent = new Date().toLocaleTimeString();
+  const body = document.createElement("span");
+  body.className = "msg";
+  body.textContent = message;
+  row.appendChild(ts);
+  row.appendChild(body);
+  element.appendChild(row);
+  while (element.children.length > LOG_CAP) element.removeChild(element.firstChild);
   element.scrollTop = element.scrollHeight;
+}
+
+// Banner de error inline: la página ya está abierta, el registro no es el canal de corrección.
+function showError(message) {
+  const el = document.getElementById("actionError");
+  el.textContent = message;
+  el.hidden = false;
+}
+
+function clearError() {
+  document.getElementById("actionError").hidden = true;
+}
+
+function setStartCard(collapsed) {
+  document.getElementById("startCard").hidden = collapsed;
+  const toggle = document.getElementById("configToggle");
+  toggle.textContent = collapsed ? "Ajustes" : "Ocultar ajustes";
+  toggle.ariaExpanded = String(!collapsed);
+}
+
+function roundsOrDefault(raw) {
+  const parsed = Number(raw);
+  if (raw === "" || !Number.isFinite(parsed)) return 3;
+  return Math.min(10, Math.max(1, Math.round(parsed)));
+}
+
+function parseRounds(raw) {
+  const parsed = Number(raw);
+  if (raw === "" || !Number.isFinite(parsed)) return 3;
+  const fixed = Math.min(10, Math.max(1, Math.round(parsed)));
+  if (fixed !== parsed) {
+    log(`⚠ rounds fuera de rango (${raw}): se usa ${fixed}. Válido: 1 a 10.`);
+  }
+  return fixed;
+}
+
+function updatePreFlight() {
+  const el = document.getElementById("preFlight");
+  if (!repo) {
+    el.textContent = "Asigna la carpeta del workspace para habilitar el arranque de la fábrica.";
+    return;
+  }
+  const ghrepo = document.getElementById("ghrepo").value.trim();
+  const rounds = roundsOrDefault(document.getElementById("rounds").value.trim());
+  el.textContent = `Al arrancar se crearán issues y PRs en ${ghrepo || "el repo configurado"}, hasta ${rounds} rounds. Puedes pausar en cualquier momento.`;
 }
 
 // El token se obtiene de /token (mismo origen); no va incrustado en el HTML.
@@ -38,27 +99,61 @@ try {
   log(`error: ${error.message}`);
 }
 
-async function action(actionName, input = {}) {
-  const response = await fetch(routeWithRepo("/action", repo), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-sf-token": actionToken },
-    body: JSON.stringify({ actionName, input }),
-  });
-  const result = await response.json();
-  if (result.error) log(`⚠ ${result.error}${result.message ? `: ${result.message}` : ""}`);
-  else log(`✔ ${result.status || JSON.stringify(result).slice(0, 120)}`);
-  if (result.needs_force) log(`el repo ya tiene estado: marca «Forzar reinicio» y vuelve a pulsar Init solo si quieres perder el progreso`);
-  return result;
+async function action(actionName, input = {}, btn) {
+  if (btn) btn.disabled = true;
+  clearError();
+  try {
+    const response = await fetch(routeWithRepo("/action", repo), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-sf-token": actionToken },
+      body: JSON.stringify({ actionName, input }),
+    });
+    const result = await response.json();
+    if (result.error) {
+      log(`⚠ ${result.error}${result.message ? `: ${result.message}` : ""}`);
+      showError(`«${actionName}» falló: ${result.error}. Corrige la configuración e inténtalo de nuevo.`);
+    } else {
+      log(`✔ ${result.status || JSON.stringify(result).slice(0, 120)}`);
+      if (result.needs_force) log(`el repo ya tiene estado: marca «Forzar reinicio» y vuelve a pulsar Init solo si quieres perder el progreso`);
+      if (actionName === "play" || actionName === "init") setStartCard(true);
+    }
+    return result;
+  } catch (error) {
+    log(`error: ${error.message}`);
+    showError(`El runner no respondió: ${error.message}. Revisa que la extensión sigue activa e inténtalo de nuevo.`);
+    return null;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
-document.getElementById("play").onclick = () => action("play");
-document.getElementById("pause").onclick = () => action("pause");
+function applyConfig() {
+  const ghrepo = document.getElementById("ghrepo").value.trim();
+  if (ghrepo && !/^[\w.-]+\/[\w.-]+$/.test(ghrepo)) {
+    log("⚠ owner/repo no válido: usa el formato owner/name (ej. svg153/mi-repo)");
+    showError("El repositorio debe tener el formato owner/name (ej. svg153/mi-repo).");
+    return undefined;
+  }
+  clearError();
+  return action("init", createInitPayload({
+    repo: ghrepo,
+    project: document.getElementById("project").value,
+    projectOwner: document.getElementById("projectOwner").value,
+    rounds: parseRounds(document.getElementById("rounds").value.trim()),
+    force: document.getElementById("forceInit")?.checked,
+  }), document.getElementById("initBtn"));
+}
+
+document.getElementById("play").onclick = () => action("play", {}, document.getElementById("play"));
+document.getElementById("pause").onclick = () => action("pause", {}, document.getElementById("pause"));
+document.getElementById("initBtn").onclick = applyConfig;
+document.getElementById("configToggle").onclick = () => setStartCard(!document.getElementById("startCard").hidden);
 document.getElementById("detectBtn").onclick = () => autofill();
 document.getElementById("ghBtn").onclick = () => refreshGithub();
 document.getElementById("importBtn").onclick = () => importExisting();
 document.getElementById("createBoardBtn").onclick = async () => {
   const result = await action("create_project");
-  if (!result.error) {
+  if (result && !result.error) {
     log(result.created
       ? `board creado: Project #${result.project_id}${result.url ? ` — ${result.url}` : ""}${(result.failures || []).length ? ` (avisos: ${result.failures.join("; ")})` : ""}`
       : `ya había board vinculado: #${result.project_id}`);
@@ -67,7 +162,7 @@ document.getElementById("createBoardBtn").onclick = async () => {
 };
 document.getElementById("syncBoardBtn").onclick = async () => {
   const result = await action("sync_project");
-  if (!result.error) log(`sync board: ${result.updated} item(s) actualizados${result.failures ? `, ${result.failures} fallo(s)` : ""}`);
+  if (result && !result.error) log(`sync board: ${result.updated} item(s) actualizados${result.failures ? `, ${result.failures} fallo(s)` : ""}`);
 };
 
 // Pestañas Pipeline / Tablero / Grafo / Orden de merge.
@@ -85,7 +180,7 @@ for (const btn of tabButtons) btn.addEventListener("click", () => selectTab(btn.
 // trabajo existente en lugar de empezar siempre de cero.
 async function refreshGithub() {
   const result = await action("github_status");
-  if (result.error) return result;
+  if (!result || result.error) return result;
   renderGithub(result);
   lastGithub = result;
   renderAll();
@@ -96,7 +191,7 @@ async function refreshGithub() {
 // Vincula las issues abiertas al run: la fase issues no las duplicará al crear.
 async function importExisting() {
   const result = await action("import_issues");
-  if (result.error) return result;
+  if (!result || result.error) return result;
   log(`vinculadas ${result.imported} de ${result.open} issues abiertas (no se duplicarán al crear)`);
   return result;
 }
@@ -104,7 +199,7 @@ async function importExisting() {
 // #82/#83: rellena owner/repo desde el remote origin y el Project vinculado al repo.
 async function autofill() {
   const result = await action("autofill");
-  if (result.error) return result;
+  if (!result || result.error) return result;
   if (result.github_repo) {
     document.getElementById("ghrepo").value = result.github_repo;
     log(`owner/repo detectado: ${result.github_repo}`);
@@ -123,19 +218,13 @@ async function autofill() {
   }
   return result;
 }
-document.getElementById("initBtn").onclick = () => action("init", createInitPayload({
-  repo: document.getElementById("ghrepo").value,
-  project: document.getElementById("project").value,
-  projectOwner: document.getElementById("projectOwner").value,
-  rounds: Number(document.getElementById("rounds").value) || 3,
-  force: document.getElementById("forceInit")?.checked,
-}));
+
 document.getElementById("ideaBtn").onclick = async () => {
   const input = document.getElementById("ideaText");
   const idea = input.value.trim();
   if (!idea) { log("⚠ escribe una idea antes de pulsar Añadir idea"); return; }
   const result = await action("add_idea", { idea });
-  if (!result.error) input.value = "";
+  if (result && !result.error) input.value = "";
 };
 
 document.getElementById("intakeBtn").onclick = () => action("run_intake");
@@ -144,42 +233,64 @@ function showRepoPath(text) {
   const repoPathEl = document.getElementById("repopath");
   if (!repoPathEl) return;
   repoPathEl.textContent = repo
-    ? `📁 ${text}`
-    : "⚠ Sin repo asignado: escribe la ruta de tu workspace git abajo y pulsa «Usar repo»";
+    ? `Carpeta local: ${text}`
+    : "Sin carpeta asignada: escribe la ruta de tu workspace git en «Arrancar la fábrica» y pulsa «Usar carpeta».";
 }
 
 async function loadRepo() {
+  const seq = ++loadSeq;
   if (events) events.close?.();
+  events = null;
   const state = await (await fetch(routeWithRepo("/state", repo), { headers: { "x-sf-token": actionToken } })).json();
+  if (seq !== loadSeq) return null;
   if (state.error) throw new Error(state.error);
   showRepoPath(state.repo || repo);
-  lastState = state.status === "missing" ? null : state;
+  const current = state.status === "missing" ? null : state;
+  lastState = current;
   renderAll();
+  if (current) setStartCard(true);
   events = new EventSource(`${routeWithRepo("/events", repo)}${repo ? "&" : "?"}token=${encodeURIComponent(actionToken)}`);
   events.onmessage = (event) => {
+    if (sseDown) {
+      sseDown = false;
+      log("conexión SSE recuperada");
+    }
     lastState = JSON.parse(event.data);
     renderAll();
   };
-  events.onerror = () => log("conexión SSE perdida, reintentando…");
+  events.onerror = () => {
+    sseDown = true;
+    log("conexión SSE perdida, reintentando…");
+    const statusEl = document.getElementById("status");
+    statusEl.textContent = "desconectado";
+    statusEl.className = "status off";
+    document.getElementById("live").className = "live off";
+  };
 }
 
-document.getElementById("setRepo").onclick = async () => {
+async function applyRepoPath() {
   const value = document.getElementById("repoInput").value.trim();
   if (!value) {
     log("escribe primero la ruta absoluta del repo");
     return;
   }
+  const seq = ++repoSeq;
   const prev = repo;
   repo = value;
   try {
     await loadRepo();
+    if (seq !== repoSeq) return;
     log(`repo asignado: ${value}`);
     await autofillOnSet();
+    clearError();
+    updatePreFlight();
   } catch (error) {
+    if (seq !== repoSeq) return;
     repo = prev;
     log(`error: ${error.message}`);
+    showError(`No se pudo usar la carpeta «${value}»: ${error.message}. Verifica la ruta e inténtalo de nuevo.`);
   }
-};
+}
 
 // Al asignar un repo, rellenar owner/repo (y Project) salvo que el usuario haya
 // editado el campo a mano: solo sobrescribimos vacío o nuestro propio valor previo.
@@ -188,11 +299,27 @@ async function autofillOnSet() {
   const gh = document.getElementById("ghrepo");
   if (gh.value && gh.value !== autoFilledRepo) return;
   const result = await autofill();
-  if (result.github_repo) autoFilledRepo = result.github_repo;
+  if (result && result.github_repo) autoFilledRepo = result.github_repo;
 }
 
+document.getElementById("setRepo").onclick = applyRepoPath;
+document.getElementById("repoInput").onkeydown = (event) => {
+  if (event.key === "Enter") return applyRepoPath();
+  return undefined;
+};
+for (const id of ["ghrepo", "project", "projectOwner", "rounds"]) {
+  const el = document.getElementById(id);
+  el.oninput = updatePreFlight;
+  el.onkeydown = (event) => {
+    if (event.key === "Enter") return applyConfig();
+    return undefined;
+  };
+}
+
+updatePreFlight();
 try {
   await loadRepo();
 } catch (error) {
   log(`error: ${error.message}`);
+  showError(`El panel no pudo leer el estado actual: ${error.message}. Asigna la carpeta en «Arrancar la fábrica» para reintentar.`);
 }
