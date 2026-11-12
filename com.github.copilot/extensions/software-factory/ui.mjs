@@ -99,6 +99,7 @@ export function renderState(state, doc = document) {
       const dot = doc.createElement("span");
       const taskStatus = TASK_STATUSES.has(task.status) ? task.status : "pending";
       dot.className = `dot ${taskStatus}`;
+      dot.ariaHidden = "true";
       row.appendChild(dot);
 
       const title = doc.createElement("span");
@@ -113,7 +114,9 @@ export function renderState(state, doc = document) {
       taskList.appendChild(row);
     }
   } else {
-    appendEmpty(taskList, `Fase ${state?.phase || "—"} sin tareas (pulsa Play o next).`, doc);
+    appendEmpty(taskList, state
+      ? `Fase ${state.phase || "—"} sin tareas. Espera la siguiente fase o pulsa «Arrancar».`
+      : "Sin fábrica iniciada: sin tareas todavía. Asigna la carpeta y pulsa «Arrancar».", doc);
   }
 
   const issueList = doc.getElementById("issues");
@@ -132,6 +135,7 @@ export function renderState(state, doc = document) {
         link.rel = "noopener noreferrer";
       }
       link.textContent = `#${String(issue.number ?? "")} ${String(issue.title ?? "")}`;
+      link.title = link.textContent;
       row.appendChild(link);
       issueList.appendChild(row);
     }

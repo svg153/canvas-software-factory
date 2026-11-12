@@ -36,6 +36,7 @@
     }
   }
   * { box-sizing:border-box; margin:0; }
+  [hidden] { display:none !important; }
   body {
     background:var(--bg); color:var(--txt); font:14px/1.45 var(--font); padding:16px 18px;
   }
@@ -44,6 +45,7 @@
   .live.running { background:var(--acc); animation:blink 1.6s infinite; }
   .live.paused { background:var(--warn); animation:blink 2.6s infinite; }
   .live.done { background:var(--acc); }
+  .live.off { background:var(--bad); }
   @keyframes blink { 50% { opacity:.35; } }
   h1 { font-size:24px; font-weight:700; letter-spacing:-.01em; font-family:var(--font); }
   .round { color:var(--mut); font-size:13px; font-variant-numeric:tabular-nums; }
@@ -52,7 +54,7 @@
   .btn {
     border:1px solid var(--line); background:var(--card); color:var(--txt);
     padding:7px 18px; border-radius:8px; cursor:pointer; font:600 13px var(--font);
-    transition:border-color .15s, background .15s;
+    min-height:36px; transition:border-color .15s, background .15s;
   }
   .btn:hover { border-color:var(--mut); }
   .btn.play { background:#1a4d2e; border-color:var(--acc); color:#7ee2a0; }
@@ -69,17 +71,30 @@
   .status.running { color:var(--run); border-color:var(--run); }
   .status.paused { color:var(--warn); border-color:var(--warn); }
   .status.done { color:var(--acc); border-color:var(--acc); }
+  .status.off { color:var(--bad); border-color:var(--bad); border-style:dashed; }
   button:focus-visible, input:focus-visible, a:focus-visible, [tabindex]:focus-visible {
     outline:2px solid var(--run); outline-offset:1px; border-radius:6px;
   }
-  #repopath { color:var(--mut); font-size:12px; margin:0 0 8px; overflow-wrap:anywhere; }
-  .init { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
-  .init input {
+  #repopath { color:var(--mut); font-size:12px; margin:0 0 6px; overflow-wrap:anywhere; }
+  .preflight { color:var(--mut); font-size:12px; margin:0 0 14px; }
+  .preflight::before { content:"▸ "; color:var(--run); }
+  .card { margin:0 0 16px; }
+  .step { padding:12px 0 4px; }
+  .step:first-of-type { padding-top:2px; }
+  .step + .step { border-top:1px solid var(--line); }
+  .step > label { display:block; font-size:12px; font-weight:600; margin-bottom:8px; }
+  .step .hint { color:var(--mut); font-size:12px; margin:8px 0 8px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .row input[type="text"], .row input[type="number"] {
+    flex:1 1 170px; min-width:0; min-height:44px;
     background:var(--bg); border:1px solid var(--line); color:var(--txt);
-    padding:6px 9px; border-radius:6px; font:13px var(--font);
+    padding:9px 10px; border-radius:8px; font:13px var(--font);
   }
-  .init input::placeholder { color:var(--mut); }
-  #repobar { margin:0 0 12px; }
+  .row input::placeholder { color:var(--mut); }
+  .row .field { display:flex; align-items:center; gap:8px; flex:0 1 160px; }
+  .row .field > label { color:var(--mut); font-size:12px; white-space:nowrap; }
+  .row .field input { flex:1 1 64px; min-width:56px; max-width:80px; }
+  .row .btn { min-height:44px; flex:0 0 auto; }
   .pipeline { display:flex; gap:10px; margin:14px 0 16px; flex-wrap:wrap; }
   .phase {
     flex:1 1 120px; background:var(--card); border:1px solid var(--line); border-radius:10px;
@@ -90,8 +105,8 @@
     content:"›"; position:absolute; right:-9px; top:50%; transform:translateY(-50%);
     color:var(--mut); font-size:14px; line-height:1;
   }
-  .phase.active { border-color:var(--run); background:color-mix(in srgb, var(--run) 9%, var(--card)); }
-  .phase.donep { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 7%, var(--card)); }
+  .phase.active { border-color:var(--run); background:rgba(88,166,255,.10); background:color-mix(in srgb, var(--run) 9%, var(--card)); }
+  .phase.donep { border-color:var(--acc); background:rgba(63,185,80,.08); background:color-mix(in srgb, var(--acc) 7%, var(--card)); }
   .phase b { display:block; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .phase span { color:var(--mut); font-size:11px; font-variant-numeric:tabular-nums; }
   .grid { display:grid; grid-template-columns:1.2fr .8fr; gap:14px; }
@@ -102,7 +117,7 @@
     display:flex; gap:8px; padding:7px 8px; border-radius:8px; align-items:baseline;
     border:1px solid transparent; transition:border-color .15s, background .15s;
   }
-  .task:hover { border-color:var(--line); background:color-mix(in srgb, var(--run) 5%, transparent); }
+  .task:hover { border-color:var(--line); background:rgba(88,166,255,.05); background:color-mix(in srgb, var(--run) 5%, transparent); }
   .task + .task { margin-top:2px; }
   .dot { width:9px; height:9px; border-radius:50%; flex:none; align-self:center; }
   .dot.pending { background:var(--mut); }
@@ -112,7 +127,7 @@
   .task .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .task .id { color:var(--mut); font-size:11px; font-family:var(--mono); flex:none; }
   a { color:var(--run); text-decoration:none; } a:hover { text-decoration:underline; }
-  .issue { padding:6px 8px; border-bottom:1px dashed color-mix(in srgb, var(--line) 55%, transparent); }
+  .issue { padding:6px 8px; border-bottom:1px dashed var(--line); border-bottom:1px dashed color-mix(in srgb, var(--line) 55%, transparent); }
   .issue:last-child { border-bottom:0; }
   .issue a, .issue span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .empty { color:var(--mut); font-style:italic; padding:10px 8px; text-align:center; }
@@ -121,7 +136,8 @@
     border:1px solid var(--line); border-radius:10px; padding:6px 10px; background:var(--bg);
   }
   #log .line {
-    display:flex; gap:9px; padding:2px 0;
+    display:flex; gap:9px; padding:3px 6px; margin:0 -6px; border-radius:5px;
+    border-bottom:1px dashed var(--line);
     border-bottom:1px dashed color-mix(in srgb, var(--line) 45%, transparent);
   }
   #log .line:last-child { border-bottom:0; }
@@ -129,7 +145,18 @@
   #log .msg { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--mut); }
   #log .line.ok .msg { color:var(--txt); }
   #log .line.err .msg { color:var(--bad); }
-  #log .line.err { background:color-mix(in srgb, var(--bad) 7%, transparent); }
+  #log .line.err { background:rgba(248,81,73,.07); background:color-mix(in srgb, var(--bad) 7%, transparent); }
+  #actionError {
+    margin:12px 0 0; padding:10px 12px; border:1px solid var(--bad); border-radius:10px;
+    background:rgba(248,81,73,.09); background:color-mix(in srgb, var(--bad) 9%, transparent);
+    color:var(--bad); font-size:13px;
+  }
+  @media (hover:none) and (pointer:coarse) { .btn { min-height:44px; } }
+  @media (max-width:900px){
+    .grid { grid-template-columns:1fr; }
+    .row .field { flex:1 1 140px; }
+    .row .field input { max-width:none; }
+  }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation:none !important; transition:none !important; }
   }
@@ -141,38 +168,53 @@
   <h1>🏭 Software Factory</h1>
   <span class="round" id="round"></span>
   <span class="stat"><b id="sWorking">0</b> activas</span>
-  <span class="stat"><b id="sDone">0</b> done</span>
-  <span class="stat"><b id="sFailed">0</b> failed</span>
-  <button class="btn play" id="play" aria-label="Iniciar o reanudar la fábrica">▶ Play</button>
-  <button class="btn pause" id="pause" aria-label="Pausar la fábrica">⏸ Pausa</button>
+  <span class="stat"><b id="sDone">0</b> hechas</span>
+  <span class="stat"><b id="sFailed">0</b> fallidas</span>
   <span class="status" id="status" role="status" aria-live="polite">sin estado</span>
+  <button class="btn" id="configToggle" aria-controls="startCard" aria-expanded="true">Ajustes</button>
+  <button class="btn play" id="play" aria-label="Iniciar o reanudar la fábrica">▶ Arrancar</button>
+  <button class="btn pause" id="pause" aria-label="Pausar la fábrica">⏸ Pausa</button>
 </header>
-<div class="round" id="repopath" title="Directorio que gestiona este panel"></div>
-<div class="init" id="repobar">
-  <input id="repoInput" placeholder="ruta del workspace (C:\...\mi-repo)" size="42" aria-label="Ruta absoluta del workspace git" title="Ruta absoluta del repositorio git que quiere gestionar este panel. El host de extensiones no conoce tu sesión: escribe la ruta aquí y pulsa «Usar repo»." />
-  <button class="btn" id="setRepo" title="Aplicar la ruta escrita">Usar repo</button>
-</div>
+<p id="repopath" title="Directorio que gestiona este panel"></p>
+<p class="preflight" id="preFlight">Asigna la carpeta del workspace para habilitar el arranque de la fábrica.</p>
+
+<section class="panel card" id="startCard" aria-label="Arranque de la fábrica">
+  <h2>Arrancar la fábrica</h2>
+  <div class="step">
+    <label for="repoInput">Carpeta local del workspace</label>
+    <div class="row">
+      <input id="repoInput" type="text" placeholder="ruta del workspace (C:\...\mi-repo)" aria-label="Ruta absoluta del workspace git" title="Ruta absoluta del repositorio git que quiere gestionar este panel. El host de extensiones no conoce tu sesión: escribe la ruta aquí." />
+      <button class="btn" id="setRepo" title="Aplicar la ruta escrita">Usar carpeta</button>
+    </div>
+    <p class="hint">Sin carpeta asignada no hay fábrica: es la ruta git donde se crean los commits.</p>
+  </div>
+  <div class="step">
+    <label for="ghrepo">Repositorio GitHub — destino de issues y PRs</label>
+    <div class="row">
+      <input id="ghrepo" type="text" placeholder="owner/repo" aria-label="Repositorio en GitHub" title="Repositorio en GitHub, formato owner/name (ej. svg153/canvas-software-factory)" />
+      <input id="project" type="text" placeholder="Project nº (opc.)" aria-label="Número de GitHub Project" title="NÚMERO del GitHub Project (no su nombre). Vacío = sin Project." />
+      <input id="projectOwner" type="text" placeholder="Project owner (opc.)" aria-label="Owner del GitHub Project" title="Usuario u organización dueña del Project. Por defecto: el owner del repo." />
+      <span class="field"><label for="rounds">Rounds</label><input id="rounds" type="number" min="1" max="10" step="1" value="3" aria-label="Número de rounds (1 a 10)" title="Rounds del bucle: entero de 1 a 10" /></span>
+      <button class="btn" id="initBtn" aria-label="Guardar configuración de la fábrica">Guardar configuración</button>
+    </div>
+    <p class="hint">Cuando esté todo listo, pulsa «Arrancar» en la cabecera. Puedes pausar en cualquier momento.</p>
+  </div>
+</section>
 
 <div class="pipeline" id="pipeline" aria-label="Fases de la fábrica"></div>
 
 <div class="grid">
   <div class="panel" role="region" aria-label="Tareas de la fase actual">
     <h2>Tareas de la fase actual</h2>
-    <div id="tasks"><div class="empty">Sin fábrica iniciada.</div></div>
+    <div id="tasks"><div class="empty">Sin fábrica todavía: asigna la carpeta y pulsa «Arrancar».</div></div>
   </div>
-  <div class="panel" role="region" aria-label="Issues creadas y configuración">
+  <div class="panel" role="region" aria-label="Issues creadas">
     <h2>Issues creadas</h2>
     <div id="issues"><div class="empty">Ninguna todavía.</div></div>
-    <h2 style="margin-top:14px">Configurar</h2>
-    <div class="init">
-      <input id="ghrepo" placeholder="owner/repo" size="18" aria-label="Repositorio en GitHub" title="Repositorio en GitHub, formato owner/name (ej. svg153/canvas-software-factory)" />
-      <input id="project" placeholder="Project nº (opc.)" size="14" aria-label="Número de GitHub Project" title="NÚMERO del GitHub Project (no su nombre). Vacío = sin Project." />
-      <input id="projectOwner" placeholder="Project owner (opc.)" size="18" aria-label="Owner del GitHub Project" title="Usuario u organización dueña del Project. Por defecto: el owner del repo." />
-      <input id="rounds" placeholder="rounds" size="6" value="3" aria-label="Número de rounds" title="Número de rounds del bucle" />
-      <button class="btn" id="initBtn">Init</button>
-    </div>
   </div>
 </div>
+
+<div id="actionError" role="alert" hidden></div>
 
 <div id="log" role="log" aria-label="Registro de actividad" aria-live="polite"></div>
 
