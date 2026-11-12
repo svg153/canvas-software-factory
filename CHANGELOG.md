@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+- `PHASES` con fuente de verdad única (#32): el runner ya importaba el `PHASES` exportado
+  por `runner/lib/state.mjs`; la copia local de `ui.mjs` queda declarada como vigilada y
+  dos tests en `runner/test/ui-gaps.test.mjs` fallan si diverge del orden autoritativo o
+  si reaparecen copias extra en `extension.mjs`/`app.mjs`.
+
 ### Added
 - Ronda 2 de mejoras UI/UX del canvas (#98): persistencia en `localStorage` de la
   configuración, la pestaña activa y el estado de la tarjeta de arranque (se restauran al

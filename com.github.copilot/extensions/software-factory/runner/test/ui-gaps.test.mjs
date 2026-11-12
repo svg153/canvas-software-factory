@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createInitPayload, renderGithub, renderState, routeWithRepo } from "../../ui.mjs";
+import { PHASES as CANONICAL_PHASES } from "../../runner/lib/state.mjs";
 
 const extDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (name) => readFileSync(join(extDir, name), "utf8");
@@ -541,4 +542,19 @@ test("#98: la barra de progreso cuenta las tareas de la fase actual", () => {
   }, doc);
   assert.equal(doc.els.roundProgress.hidden, false);
   assert.match(doc.els.roundProgressText.textContent, /1\/2 tareas de la fase implement/);
+});
+
+// --- #32: PHASES con fuente de verdad única ----------------------------------
+
+test("#32: la copia local de PHASES en ui.mjs coincide con la canónica de state.mjs", () => {
+  const m = read("ui.mjs").match(/const PHASES = (\[[^\]]*\]);/);
+  assert.ok(m, "ui.mjs debe declarar const PHASES = [...] (copia vigilada)");
+  const local = JSON.parse(m[1]);
+  assert.deepEqual(local, CANONICAL_PHASES, "el orden de fases del runner es autoritativo");
+});
+
+test("#32: no reaparecen copias extra de PHASES fuera de state.mjs y ui.mjs", () => {
+  for (const name of ["extension.mjs", "app.mjs"]) {
+    assert.ok(!new RegExp(`const PHASES\\s*=`).test(read(name)), `${name} no debe redefinir PHASES`);
+  }
 });
