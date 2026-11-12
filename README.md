@@ -9,17 +9,21 @@ reviews/audits the round, and repeats for a bounded number of rounds.
 
 | Component | Path | Purpose |
 |---|---|---|
-| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, seeds (user ideas), repo inventory (intake), Play/Pause, an idea box and an "Ingestar repo" button. Play sends the kick-off prompt to the session agent via `session.send`. |
-| Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase and executes the mechanical `issues` phase (`gh issue create` + `gh project item-add`). |
+| Canvas extension | `com.github.copilot/extensions/software-factory/` | GitHub-Project-style panel with tabs: live pipeline (SSE), tasks, created issues, seeds (user ideas), repo inventory (intake) and an "Ingestar repo" button, Play/Pause — plus a **kanban board** (Backlog/Ready/In Progress/In Review/Done) synced to the GitHub Project, a **dependency graph** laid out wave-by-wave top-to-bottom, and a **merge order** view. Play sends the kick-off prompt to the session agent via `session.send`. |
+| Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase, executes the mechanical `issues` phase (`gh issue create` + `gh project item-add` + dependency wiring + repo intake inventory), and gates `implement` by **dependency waves** so issues are never all implemented at once (fewer merge conflicts). |
+| Graph lib | `com.github.copilot/extensions/software-factory/runner/lib/graph.mjs` | Pure dependency resolution + Kahn wave layering (with cycle breaking), claimable/blocked gating and kanban-column derivation. Canonical logic; `ui.mjs` mirrors it for the browser. |
 | Skill | `skills/software-factory/SKILL.md` | The loop contract the agent follows (phases, subagents, rules). |
 
 Phases: `discover → plan → grill → issues → implement → review` · rounds capped by
-`max_rounds` (default 3) · `pause` stops re-cruitment at any time.
+`max_rounds` (default 3) · `pause` stops re-cruitment at any time · inside `implement`,
+issues are released in dependency waves (`next` returns claimable tasks plus a `blocked`
+list; blocked issues never launch early).
 
 ## Requirements
 
-- Node 20+, `gh` CLI authenticated (issues/Project phase), a GitHub Project number if you
-  want issues enqueued (`gh project list`).
+- Node 20+, `gh` CLI authenticated (issues/Project phase). A GitHub Project is optional:
+  if the repo has none, the panel's **Crear board GitHub** button (`gh project create`)
+  makes a kanban board and links it; **Sincronizar board** pushes issue statuses to it.
 - GitHub Copilot desktop app with canvas extensions enabled.
 - For `install.ps1` and the install test suite: PowerShell 7+ (`pwsh`) on Windows, as
   used by CI. `@github/copilot-sdk` is resolved by the app's canvas runtime, so a fresh

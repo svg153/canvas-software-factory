@@ -9,7 +9,8 @@ import { promisify } from "node:util";
 import { createFactoryServer } from "./http.mjs";
 import { initRunnerArgs, ideaRunnerArgs, intakeRunnerArgs, startGuardError } from "./actions.mjs";
 import { deriveGithubRepo } from "./git.mjs";
-import { listLinkedProjects, getGithubStatus, importOpenIssues } from "./gh.mjs";
+import { listLinkedProjects, getGithubStatus, importOpenIssues, createProjectBoard, syncProjectStatuses } from "./gh.mjs";
+import { deriveBoard } from "./graph.mjs";
 import { saveState, updateState } from "./state.mjs";
 
 const RUNNER_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -159,6 +160,56 @@ export function createFactoryService({ defaultRepo, onPlay, resolveRepo, playMes
     if (actionName === "next") {
       const out = await run("node", [RUNNER, "next", repoDir], { windowsHide: true });
       return JSON.parse(out.stdout.trim());
+    }
+    if (actionName === "create_project") {
+      // Board kanban de GitHub: si el run no tiene project_id, se crea un Project V2
+      // (estados por defecto = kanban) y se enlaza al repo. Idempotente: si ya hay
+      // project_id no crea nada, solo informa.
+      const state = await readState(repoDir);
+      if (!state) throw new ActionError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
+      let out;
+      try {
+        out = await createProjectBoard(state, {
+          persistState: async () => {
+            await saveState(repoDir, state);
+            broadcast(repoDir, state);
+          },
+        });
+      } catch (e) {
+        throw new ActionError("sf_project_fallo", `no se pudo crear el board: ${String(e.message).slice(0, 200)}`);
+      }
+      return { status: "create_project", ...out };
+    }
+    if (actionName === "sync_project") {
+      // Empuja el estado kanban derivado del state al campo Status del Project.
+      // Blando: los items que fallan (no están en el board, sin permiso) se listan.
+      const state = await readState(repoDir);
+      if (!state) throw new ActionError("sf_no_state", "Ejecuta primero: node <runner>/sf.mjs init <repo> --repo owner/repo");
+      if (!state.project_id) throw new ActionError("sf_no_project", "no hay Project vinculado; pulsa «Crear board GitHub» primero");
+      let closedNumbers;
+      try {
+        const ghStatus = await getGithubStatus(state.repo);
+        const open = new Set((ghStatus.issues || []).map((i) => Number(i.number)));
+        closedNumbers = new Set(
+          (state.issues || []).map((i) => Number(i.number)).filter((n) => Number.isFinite(n) && !open.has(n)),
+        );
+      } catch { /* sin info de GitHub: se sincroniza solo con el state */ }
+      const board = deriveBoard(state, closedNumbers);
+      const toStatus = { backlog: "Backlog", ready: "Todo", in_progress: "In Progress", in_review: "In Review", done: "Done" };
+      const edits = [];
+      for (const col of board.columns) {
+        for (const card of col.cards) {
+          if (card.url && card.url !== "(dry-run)") edits.push({ url: card.url, status: toStatus[col.key] });
+        }
+      }
+      const out = await syncProjectStatuses(state, edits);
+      if (out.failures.length) {
+        await updateState(repoDir, (s) => {
+          s.notes = (s.notes || "") + `\nsync project: ${out.failures.length} fallo(s): ${out.failures.slice(0, 3).map((f) => f.error).join(" | ").slice(0, 200)}`;
+          return s;
+        }).then((s) => broadcast(repoDir, s)).catch(() => {});
+      }
+      return { status: "sync_project", updated: out.updated, failures: out.failures.length, columns: board.columns.map((c) => ({ key: c.key, count: c.cards.length })) };
     }
     throw new ActionError("sf_unknown_action", `Acción desconocida: ${actionName}`);
   }
