@@ -21,6 +21,24 @@ const originalPromisified = promisify(originalExecFile);
 const LOG = process.env.SF_TEST_FAKE_GH_LOG;
 const COUNTER = process.env.SF_TEST_FAKE_GH_COUNTER;
 const MODE = process.env.SF_TEST_FAKE_GH_MODE;
+const FLAKY = COUNTER ? `${COUNTER}.flaky` : null;
+
+// Modo flaky-502: la PRIMERA creacion por titulo falla con un 502 transitorio y las
+// sucesivas tienen exito (el marcador vive en un archivo para sobrevivir procesos).
+function flakySeenBefore(title) {
+  let m = {};
+  try { if (FLAKY) m = JSON.parse(readFileSync(FLAKY, "utf8")); } catch { /* primera vez */ }
+  const seen = !!m[title];
+  if (FLAKY) { m[title] = 1; writeFileSync(FLAKY, JSON.stringify(m)); }
+  return seen;
+}
+
+function transientError(args) {
+  const err = new Error(`Command failed: gh ${args.join(" ")}`);
+  err.code = 1;
+  err.stderr = "HTTP 502 Bad Gateway: the service is temporarily unavailable";
+  return { err, stdout: "", stderr: err.stderr };
+}
 
 function nextIssueNumber() {
   let n = COUNTER && existsSync(COUNTER) ? Number(readFileSync(COUNTER, "utf8")) : 0;
@@ -38,6 +56,10 @@ function simulateGh(args) {
       err.code = 1;
       err.stderr = "error: gh auth could not complete";
       return { err, stdout: "", stderr: err.stderr };
+    }
+    if (MODE === "transient") return transientError(args);
+    if (MODE === "flaky-502" && !flakySeenBefore(args[args.indexOf("--title") + 1])) {
+      return transientError(args);
     }
     const stdout = MODE === "garbage"
       ? "not a url at all\n"

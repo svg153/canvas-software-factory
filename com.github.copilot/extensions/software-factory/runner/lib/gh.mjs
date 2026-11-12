@@ -262,6 +262,29 @@ export async function readRepoInventory(state, { runGh = gh } = {}) {
   return inv;
 }
 
+// #27: los fallos de creacion se clasifican para que un error TRANSITORIO (rate
+// limit, 5xx, red) no quede descartado para siempre solo porque los args no cambian.
+// Transitorios: se reintentan hasta MAX_TRANSIENT_ATTEMPTS (el contador se resetea
+// tras FAILURE_TTL_MS). Deterministas (auth, validacion): se siguen saltando mientras
+// los args sean identicos, con el resultado visible en state.notes.
+const TRANSIENT_ISSUE_ERROR = /rate limit|secondary rate|temporar|try again|timed[ _-]?out|timeout|\b5\d{2}\b|\b50[234]\b|ECONN|EAI_AGAIN|ENOTFOUND|EPROTO|EPIPE|socket hang up|fetch failed|aborted|network/i;
+const MAX_TRANSIENT_ATTEMPTS = 3;
+const FAILURE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export function isTransientIssueError(error) {
+  const msg = error && typeof error === "object"
+    ? `${error.message || ""}\n${error.stderr || ""}`
+    : String(error || "");
+  return TRANSIENT_ISSUE_ERROR.test(msg);
+}
+
+// Intentos efectivos de un registro previo: 0 si es de otra firma o si caduco el TTL.
+function effectiveAttempts(rec, signature) {
+  if (!rec || rec.signature !== signature) return 0;
+  if (rec.last_at && Date.now() - Date.parse(rec.last_at) > FAILURE_TTL_MS) return 0;
+  return rec.attempts || 0;
+}
+
 // Create issues from the draft JSON and add them to the GitHub Project (if set).
 // Draft schema: { "issues": [ { id?, title, body, labels: [..], depends_on?: [refs], number? } ] }
 // `id` es una referencia local al draft y `depends_on` acepta ese id, un número de
@@ -351,12 +374,19 @@ const known = [...state.issues];
       created.push({ title: it.title, url: "(dry-run)", number: ++nextFakeNumber, dry: true });
       continue;
     }
-    // Un fallo determinista idéntico (mismos args) no se repite en re-runs.
+    // Un fallo determinista (o un transitorio ya agotado) con los mismos args no se
+    // repite; un transitorio con intentos pendientes se reintenta en esta pasada (#27).
     const signature = JSON.stringify(args);
     const prev = state.issue_failures[it.title];
     if (prev && prev.signature === signature) {
-      created.failures.push({ title: it.title, error: prev.error, skipped: true });
-      continue;
+      const attempts = effectiveAttempts(prev, signature);
+      if (!prev.transient || attempts >= MAX_TRANSIENT_ATTEMPTS) {
+        created.failures.push({
+          title: it.title, error: prev.error, skipped: true,
+          transient: !!prev.transient, attempts,
+        });
+        continue;
+      }
     }
     let url;
     let number;
@@ -369,9 +399,14 @@ const known = [...state.issues];
         throw new Error(`salida de gh issue create no utilizable para "${it.title}": ${JSON.stringify(String(url).slice(0, 200))}`);
       }
     } catch (e) {
-      state.issue_failures[it.title] = { signature, error: e.message };
-      created.failures.push({ title: it.title, error: e.message });
-      addNote(`issue create failed for "${it.title}": ${e.message}`);
+      const transient = isTransientIssueError(e);
+      const attempts = effectiveAttempts(state.issue_failures[it.title], signature) + 1;
+      state.issue_failures[it.title] = {
+        signature, error: e.message, transient, attempts,
+        last_at: new Date().toISOString(),
+      };
+      created.failures.push({ title: it.title, error: e.message, transient, attempts });
+      addNote(`issue create failed for "${it.title}" (${transient ? `transitorio, intento ${attempts}/${MAX_TRANSIENT_ATTEMPTS}` : "determinista"}): ${e.message}`);
       await persistState();
       continue;
     }

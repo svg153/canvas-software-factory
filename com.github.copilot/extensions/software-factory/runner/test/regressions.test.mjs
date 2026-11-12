@@ -12,7 +12,7 @@ import { request as httpRequest } from "node:http";
 import { createFactoryServer } from "../lib/http.mjs";
 import { createRepoAllowlist } from "../lib/allowlist.mjs";
 import { symlink } from "node:fs/promises";
-import { createIssuesFromDraft, projectItemAddArgs, readRepoInventory, repoSlug } from "../lib/gh.mjs";
+import { createIssuesFromDraft, isTransientIssueError, projectItemAddArgs, readRepoInventory, repoSlug } from "../lib/gh.mjs";
 import { initRunnerArgs, ideaRunnerArgs, intakeRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, failedTasks, loadState, saveState, updateState, withStateLock, paths, newTask, writeWorkOrder } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt, planPrompt } from "../lib/prompts.mjs";
@@ -326,7 +326,7 @@ test("missing labels are auto-created before issue create and failures never abo
   assert.deepEqual(created.map((i) => i.title), ["A", "C"]);
   assert.deepEqual(created.failures.map((f) => f.title), ["B"]);
   assert.match(state.notes, /label inválido omitido/);
-  assert.match(state.notes, /issue create failed for "B": boom/);
+  assert.match(state.notes, /issue create failed for "B" \(determinista\): boom/);
 
   calls.length = 0;
   const again = await createIssuesFromDraft(state, { runGh });
@@ -1969,3 +1969,152 @@ test("canvas and UI wire run_intake to the intake action and render inventory", 
   const emptyDoc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "inventory"]);
   renderState({ status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [], inventory: null }, emptyDoc);
   });
+
+// ---------- #27: reintentos de creacion de issues y gating de la fase ----------
+
+test("#27: un fallo transitorio se reintenta en la siguiente pasada sin reset manual", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-27-transient-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  await writeFile(join(tempDir, ".software-factory", "issues-draft.json"), JSON.stringify({
+    issues: [{ title: "Alpha" }],
+  }));
+  const state = { repo_path: tempDir, repo: "org/repo", project_id: "", issues: [] };
+  let ghDown = true;
+  const titlesTried = [];
+  const runGh = async (args) => {
+    const title = args[args.indexOf("--title") + 1];
+    titlesTried.push(title);
+    if (ghDown) throw new Error("HTTP 502 Bad Gateway: temporarily unavailable");
+    return "https://github.com/org/repo/issues/7";
+  };
+  const first = await createIssuesFromDraft(state, { runGh });
+  assert.equal(first.length, 0);
+  assert.equal(first.failures.length, 1);
+  assert.equal(first.failures[0].transient, true);
+  assert.equal(first.failures[0].attempts, 1);
+  assert.equal(state.issue_failures.Alpha.attempts, 1);
+  assert.equal(state.issue_failures.Alpha.transient, true);
+  ghDown = false;
+  const second = await createIssuesFromDraft(state, { runGh });
+  assert.deepEqual(titlesTried, ["Alpha", "Alpha"], "el transitorio se reintenta sin borrar el registro");
+  assert.deepEqual(second.map((i) => i.title), ["Alpha"]);
+  assert.equal(state.issue_failures.Alpha, undefined, "el registro se limpia al tener exito");
+});
+
+test("#27: un fallo determinista no se re-ejecuta en bucle", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-27-deterministic-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  await writeFile(join(tempDir, ".software-factory", "issues-draft.json"), JSON.stringify({
+    issues: [{ title: "Alpha" }],
+  }));
+  const state = { repo_path: tempDir, repo: "org/repo", project_id: "", issues: [] };
+  let calls = 0;
+  const runGh = async (args) => {
+    calls += 1;
+    throw new Error("error: gh auth could not complete");
+  };
+  const first = await createIssuesFromDraft(state, { runGh });
+  assert.equal(first.failures[0].transient, false);
+  const second = await createIssuesFromDraft(state, { runGh });
+  assert.equal(second.failures.length, 1);
+  assert.equal(second.failures[0].skipped, true);
+  assert.equal(calls, 1, "el determinista no vuelve a llamar a gh");
+  assert.match(state.notes, /determinista/);
+});
+
+test("#27: un transitorio se agota tras 3 intentos y queda como skip registrado", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-27-exhaust-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await mkdir(join(tempDir, ".software-factory"));
+  await writeFile(join(tempDir, ".software-factory", "issues-draft.json"), JSON.stringify({
+    issues: [{ title: "Alpha" }],
+  }));
+  const state = { repo_path: tempDir, repo: "org/repo", project_id: "", issues: [] };
+  let calls = 0;
+  const runGh = async () => {
+    calls += 1;
+    throw new Error("429 Too Many Requests: secondary rate limit");
+  };
+  for (let pass = 1; pass <= 3; pass += 1) {
+    const r = await createIssuesFromDraft(state, { runGh });
+    assert.equal(r.failures[0].skipped, undefined, `pasada ${pass} debe reintentar`);
+    assert.equal(r.failures[0].attempts, pass);
+  }
+  const fourth = await createIssuesFromDraft(state, { runGh });
+  assert.equal(fourth.failures[0].skipped, true, "agotado: se salta sin llamar a gh");
+  assert.equal(fourth.failures[0].transient, true);
+  assert.equal(calls, 3, "maximo 3 intentos por firma");
+  assert.match(state.notes, /transitorio, intento 3\/3/);
+});
+
+test("#27: clasificacion transitorio vs determinista", () => {
+  assert.ok(isTransientIssueError(new Error("HTTP 502 Bad Gateway")));
+  assert.ok(isTransientIssueError({ message: "Command failed: gh issue create", stderr: "429: secondary rate limit" }));
+  assert.ok(isTransientIssueError(new Error("socket hang up")));
+  assert.ok(isTransientIssueError(new Error("golang.org net timeout: context deadline exceeded")));
+  assert.ok(!isTransientIssueError(new Error("error: gh auth could not complete")));
+  assert.ok(!isTransientIssueError("salida de gh issue create no utilizable para Alpha"));
+});
+
+test("#27 e2e: la fase issues se bloquea con fallo transitorio y avanza al reintentar con exito", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-27-e2e-flaky-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const logPath = join(tempDir, "gh-calls.log");
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir, "flaky-502") });
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({
+    issues: [{ title: "Alpha" }],
+  }));
+  let out = JSON.parse((await run("next", repo)).stdout);
+  let sawBlocked = false;
+  let guard = 0;
+  while (out.status === "running" && guard++ < 40) {
+    if (out.advance?.blocked?.reason === "issue_creation_retry") sawBlocked = true;
+    if (out.phase === "implement") break;
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+    out = JSON.parse((await run("next", repo)).stdout);
+  }
+  assert.ok(sawBlocked, "la primera pasada con 502 debe bloquear el avance");
+  assert.equal(out.phase, "implement", "tras el reintento exitoso la fabrica avanza");
+  const st = await loadState(repo);
+  assert.deepEqual(st.issues.map((i) => i.title), ["Alpha"]);
+  assert.equal(st.issue_failures.Alpha, undefined);
+  const creates = (await ghCalls(logPath)).filter((a) => a[0] === "issue" && a[1] === "create");
+  assert.equal(creates.length, 2, "exactamente 1 fallo + 1 exito, sin spam de gh");
+});
+
+test("#27 e2e: draft 100% fallido (determinista) no llega a implement con work orders fantasma", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-27-e2e-fail-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const logPath = join(tempDir, "gh-calls.log");
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir, "fail") });
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"), JSON.stringify({
+    issues: [{ title: "Alpha" }],
+  }));
+  let out = JSON.parse((await run("next", repo)).stdout);
+  let sawBlocked = false;
+  let guard = 0;
+  while (out.status === "running" && guard++ < 40) {
+    if (out.advance?.blocked?.reason === "issue_creation_retry") sawBlocked = true;
+    if (out.phase === "implement") break;
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+    out = JSON.parse((await run("next", repo)).stdout);
+  }
+  assert.ok(sawBlocked, "el fallo nuevo bloquea la primera pasada");
+  assert.ok(out.advance?.failures?.every((f) => f.skipped), "al avanzar, todos los fallos quedan registrados como skip");
+  const st = await loadState(repo);
+  assert.equal(st.issues.length, 0);
+  assert.equal(st.tasks.filter((x) => x.phase === "implement").length, 0, "cero issues = cero work orders de implement");
+  assert.match(st.notes, /determinista/);
+  const creates = (await ghCalls(logPath)).filter((a) => a[0] === "issue" && a[1] === "create");
+  assert.equal(creates.length, 1, "el determinista nunca se re-ejecuta");
+});

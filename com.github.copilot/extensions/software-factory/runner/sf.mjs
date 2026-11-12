@@ -314,6 +314,18 @@ async function advance(state, { dryRun = isDryRun() } = {}) {
     preview.issues = created;
     preview.failures = created.failures;
     if (!dryRun) await logEvent(work.repo_path, `issues phase: ${created.length} issues`);
+    // #27: con fallos transitorios pendientes de reintento la fase NO avanza; se
+    // reintenta en la proxima pasada. Los fallos ya descartados (deterministas o
+    // agotados) no bloquean: quedan registrados en notes/preview como resultado explícito.
+    const retryable = (created.failures || []).filter((f) => !f.skipped);
+    if (!dryRun && retryable.length > 0) {
+      preview.to = "issues";
+      preview.blocked = { reason: "issue_creation_retry", retryable: retryable.length };
+      work.notes = (work.notes || "") +
+        `\nissues phase: ${retryable.length} fallo(s) transitorio(s) pendiente(s) de reintento (fase sin avanzar)`;
+      await saveState(work.repo_path, work);
+      return preview;
+    }
   }
   if (work.phase === "review") {
     if (work.round >= work.max_rounds) {
