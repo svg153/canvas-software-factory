@@ -37,6 +37,10 @@ export function defaultState(repoPath, opts = {}) {
     phase: "discover",
     tasks: [],
     issues: [],
+    // PRs abiertas por la fábrica, registradas con `sf pr <repo> <taskId> <url>`:
+    // { number, url, round, task_id, recorded_at }. alimenta el work order de
+    // feedback de la fase implement (un pase por PR y round; vacio = fase auto-skip).
+    prs: [],
     // Ideas del usuario ("vocal ideas"): cada una es una semilla que la próxima
     // fase plan descompone en 1+ issues. Ciclo: new -> planned (al salir de plan)
     // -> triaged (al salir de grill). Status lo mueve la máquina de fases, no el agente.

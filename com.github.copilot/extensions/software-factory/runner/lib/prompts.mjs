@@ -158,6 +158,7 @@ export function sanitizeIssueData(text) {
 }
 
 export function implementPrompt(state, task, issue) {
+  const p = paths(state.repo_path);
   const title = flattenIssueText(issue.title);
   const inner = `TÍTULO: ${title}` + (issue.body ? `\n\n${sanitizeIssueData(issue.body)}` : "");
   const body = `\n${DATA_OPEN}\n${inner}\n${DATA_CLOSE}\n`;
@@ -180,10 +181,42 @@ ${body}
 2. Lee la issue completa: gh issue view ${issue.number} --repo ${state.repo}
 3. Crea una rama task/issue-${issue.number}, implementa el cambio mínimo completo con tests.
 4. Ejecuta build/lint/tests del repo. Abre PR con "Closes #${issue.number}". El PR requiere revisión humana: NO hagas merge.
-5. Pide revisión (subagente code-review) y aplica correcciones razonadas.
-6. Prohibido leer, copiar o emitir credenciales/secretos (tokens, .env, claves) en código, PR, logs o informes.
+5. En cuanto abras el PR, REGISTRALO en la fábrica: node "${RUNNER}" pr "${state.repo_path}" ${task.id} <url-del-PR>. Sin este paso el feedback del PR no se consume y la fase implement no cerrará.
+6. Pide revisión (subagente code-review) y aplica correcciones razonadas.
+7. PASO OBLIGATORIO — consume el feedback de GitHub antes de cerrar la tarea:
+   a. gh pr view <n> --repo ${state.repo} --json reviews,comments (reviews humanas y Copilot, comentarios sueltos).
+   b. Hilos de anotación sin resolver, via GraphQL pullRequest.reviewThreads(first: 100) seleccionando isResolved == false.
+   c. Cada hallazgo válido y dentro del alcance de la issue: impleméntalo en la rama del PR, commitea, haz push y responde al hilo citando el commit; resuélvelo.
+   d. Cada sugerencia fuera de alcance o que requiera decisión de producto: responde con la negativa razonada y añade un ítem a ${p.draft} con label "deferred-feedback" para el siguiente round (sin duplicar títulos ya creados).
+   e. Si gh pr view falla: marca la tarea como fallida (complete --fail); no la des por hecha sin haber leído el feedback.
+   Haz UN solo pase completo de feedback por PR: no esperes ni persigas nuevas respuestas de revisores dentro de esta tarea.
+8. Prohibido leer, copiar o emitir credenciales/secretos (tokens, .env, claves) en código, PR, logs o informes.
 ${RESULTS_NOTE(state, task)}`;
 }
+export function feedbackPrompt(state, task, pr) {
+  const p = paths(state.repo_path);
+  const src = (task.source_task ?? task.meta?.source_task) ? ` (tarea de origen: ${task.source_task ?? task.meta?.source_task})` : "";
+  return `# Fase ${task.round} · Feedback del PR #${pr.number}
+
+Eres el consumidor de feedback de GitHub de la Software Factory (round ${state.round}).
+PR: ${pr.url || `https://github.com/${state.repo}/pull/${pr.number}`}${src}
+
+Lee TODO el feedback abierto del PR antes de decidir nada:
+1. gh pr view ${pr.number} --repo ${state.repo} --json reviews,comments
+2. Hilos de anotación sin resolver (GraphQL): pullRequest(number: ${pr.number}) { reviewThreads(first: 100) { nodes { isResolved path line comments(first: 1) { nodes { body author { login } } } } } } -> trabaja solo los isResolved == false.
+
+Por cada hallazgo:
+- Válido y dentro del alcance del PR: implementa el cambio en la rama del PR, commitea, haz push, responde al hilo citando el commit y resuélvelo.
+- Fuera de alcance, cambio de UX no aprobado o que necesite decisión humana: responde con la negativa razonada y añade un ítem { "id", "title", "body", "labels": ["deferred-feedback"] } a ${p.draft} para el siguiente round (sin duplicar títulos ya en el draft o en state.json → issues).
+- Si gh pr view falla: reporta la tarea como fallida: node "${RUNNER}" complete "${state.repo_path}" ${task.id} --fail. No la des por hecha sin haber leído el feedback.
+
+Guarda en el informe (result_file) el recuento: hilos leídos / corregidos con commit / diferidos al draft.
+UN solo pase por PR y round: no persigas respuestas nuevas de revisores dentro de esta tarea; eso será trabajo del siguiente round si llega.
+Prohibido leer, copiar o emitir credenciales/secretos en código, PR, logs o informes.
+
+${RESULTS_NOTE(state, task)}`;
+}
+
 export function reviewPrompt(state, task) {
   const p = paths(state.repo_path);
   return `# Fase ${task.round} · Revisión, auditoría y nuevas oportunidades
@@ -191,10 +224,11 @@ export function reviewPrompt(state, task) {
 Eres el panel revisor de la Software Factory (round ${state.round}).
 
 1. Resume el estado del repo tras las implementaciones (gh pr list / issue list).
-2. Ejecuta revisión de código + auditoría de seguridad de los cambios del round.
-3. Detecta NUEVAS mejoras (deuda emergente, gaps de tests, docs): 4–8 issues.
-4. Añádelas a ${p.draft} (manteniendo las pendientes y añadiendo las nuevas; sin duplicar issues ya creadas en state.json). Conserva los campos "id"/"depends_on" de las pendientes y declara dependencias en las nuevas cuando exista un prerequisito real (otra issue abierta del round o trabajo pendiente de merge).
-5. Señala work orders/informes cuyo contenido incluya datos sensibles (credenciales, tokens, datos personales).
-6. Veredicto: ¿hay trabajo suficiente para un nuevo round? di SÍ/NO y por qué.
+2. Verifica el feedback sin consumir: para cada PR abierto del round (state.prs), lista hilos de revisión sin resolver (GraphQL reviewThreads con isResolved == false) y reviews pendientes. Si algo quedó sin responder, dilo explícitamente en el informe y proponlo como issue nueva.
+3. Ejecuta revisión de código + auditoría de seguridad de los cambios del round.
+4. Detecta NUEVAS mejoras (deuda emergente, gaps de tests, docs): 4–8 issues.
+5. Añádelas a ${p.draft} (manteniendo las pendientes y añadiendo las nuevas; sin duplicar issues ya creadas en state.json). Conserva los campos "id"/"depends_on" de las pendientes y declara dependencias en las nuevas cuando exista un prerequisito real (otra issue abierta del round o trabajo pendiente de merge).
+6. Señala work orders/informes cuyo contenido incluya datos sensibles (credenciales, tokens, datos personales).
+7. Veredicto: ¿hay trabajo suficiente para un nuevo round? di SÍ/NO y por qué.
 ${RESULTS_NOTE(state, task)}`;
 }
