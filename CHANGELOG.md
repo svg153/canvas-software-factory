@@ -19,6 +19,13 @@
   si reaparecen copias extra en `extension.mjs`/`app.mjs`.
 
 ### Added
+- Bucle de feedback de PRs abiertos (#33): nuevo comando `sf pr <url|número> [--task ID]`
+  registra PRs en `state.prs` (idempotente por número, enlaza con la tarea implement si
+  existe) y `sf next` emite mientras el PR siga abierto un work order «Feedback PR #N»
+  dentro de la fase `implement`: el agente lee la revisión del PR (o la deja si no hay),
+  aplica los cambios de `main`, empuja, y los puntos fuera de alcance se acumulan en
+  `issues-draft.json` con label `deferred-feedback`. Un pase por PR y ronda (loop guard
+  vía `pendingPrs`); sin PRs registrados `sf next` se comporta igual que antes.
 - Ronda 2 de mejoras UI/UX del canvas (#98): persistencia en `localStorage` de la
   configuración, la pestaña activa y el estado de la tarjeta de arranque (se restauran al
   abrir y la carpeta guardada se aplica sola); sincronización de la pestaña con el hash de

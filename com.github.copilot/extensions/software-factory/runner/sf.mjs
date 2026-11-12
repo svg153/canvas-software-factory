@@ -10,7 +10,7 @@ import {
   HARNESSES,
 } from "./lib/state.mjs";
 import {
-  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt, flattenIssueText,
+  discoverPrompt, planPrompt, grillPrompt, implementPrompt, feedbackPrompt, reviewPrompt, flattenIssueText,
 } from "./lib/prompts.mjs";
 import { createIssuesFromDraft, readRepoInventory, validateInitInputs } from "./lib/gh.mjs";
 import { claimableIssues, blockedIssues } from "./lib/graph.mjs";
@@ -37,6 +37,22 @@ function need(state) {
   return state;
 }
 
+// PRs del round actual que aún no tienen work order de feedback (#33).
+// Loop guard: un solo pase por PR y round; si state.prs está vacío, no se emite nada.
+function pendingPrs(state) {
+  // Los work orders de feedback se crean vía emitTasks, que propaga la meta al
+  // nivel superior de la task (t.pr + t.source_task). cmdPr solo usa t.meta.pr,
+  // así que la tarea implement original no confunde al loop guard.
+  const seen = new Set(
+    state.tasks
+      .filter((t) => t.phase === "implement" && t.round === state.round && t.pr?.number && t.source_task)
+      .map((t) => Number(t.pr.number)),
+  );
+  return (state.prs || []).filter(
+    (pr) => pr.number && !seen.has(Number(pr.number)) && Number(pr.round ?? state.round) === Number(state.round),
+  );
+}
+
 // Work orders to emit when entering a phase.
 const phasePlan = {
   discover: (s) => [{ title: `Auditoría del repo (round ${s.round})`, prompt: discoverPrompt }],
@@ -53,13 +69,22 @@ const phasePlan = {
         .filter((t) => t.phase === "implement" && t.round === s.round)
         .map((t) => Number(t.issue?.number ?? t.meta?.issue?.number)),
     );
-    return claimableIssues(s)
+    const work = claimableIssues(s)
       .filter((i) => !inRound.has(Number(i.number)))
       .map((i) => ({
         title: `Implementar #${i.number} ${flattenIssueText(i.title)}`,
         prompt: (st, t) => implementPrompt(st, t, i),
         meta: { issue: i },
       }));
+    // #33: un work order de feedback por PR abierto del round sin pase previo.
+    for (const pr of pendingPrs(s)) {
+      work.push({
+        title: `Feedback PR #${pr.number}`,
+        prompt: (st, t) => feedbackPrompt(st, t, pr),
+        meta: { pr, source_task: pr.task_id },
+      });
+    }
+    return work;
   },
   review: (s) => [{ title: `Revisión + auditoría round ${s.round}`, prompt: reviewPrompt }],
   issues: () => [], // mechanical phase: no work orders
@@ -235,10 +260,11 @@ async function cmdNext() {
   let advancePreview = null;
   if (openTasks(state).length === 0) {
     // En implement, antes de avanzar: si hay issues newly reclamables (ola
-    // desbloqueada al completarse una dependencia), se emiten y NO se avanza.
-    if (state.phase === "implement" && claimableIssues(state).length > 0) {
+    // desbloqueada al completarse una dependencia) o PRs del round sin pase de
+    // feedback (#33), se emiten y NO se avanza.
+    if (state.phase === "implement" && (claimableIssues(state).length > 0 || pendingPrs(state).length > 0)) {
       const n = await emitTasks(state, { dryRun: dry });
-      if (n > 0) await log(`implement round ${state.round}: emitidas ${n} tarea(s) de olas desbloqueadas`);
+      if (n > 0) await log(`implement round ${state.round}: emitidas ${n} tarea(s) (olas desbloqueadas / feedback PR)`);
     }
     if (state.status === "running" && openTasks(state).length === 0) {
       if (hasPhaseTasks()) {
@@ -396,6 +422,32 @@ async function cmdComplete() {
   console.log(JSON.stringify({ ok: true, task: taskId, status: t.status, open_in_phase: remaining.length }, null, 2));
 }
 
+async function cmdPr() {
+  const [taskId, urlArg] = rest;
+  if (!taskId || !urlArg) {
+    console.error("uso: node sf.mjs pr <repo> <taskId> <url-o-número-del-PR>");
+    process.exit(2);
+  }
+  const state = need(await loadState(repoPath));
+  const t = state.tasks.find((x) => x.id === taskId);
+  if (!t) { console.error(`task ${taskId} no existe`); process.exit(1); }
+  const m = /\/pull\/(\d+)/.exec(String(urlArg)) || /^(\d+)$/.exec(String(urlArg).trim());
+  if (!m) { console.error(`No puedo extraer el número de PR de: ${urlArg}`); process.exit(1); }
+  const number = Number(m[1]);
+  const url = /^https?:\/\//i.test(urlArg)
+    ? String(urlArg).replace(/[?#].*$/, "")
+    : (state.repo ? `https://github.com/${state.repo}/pull/${number}` : "");
+  state.prs = state.prs || [];
+  const entry = { number, url, round: state.round, task_id: taskId, recorded_at: nowIso() };
+  const existing = state.prs.find((p) => Number(p.number) === number);
+  if (existing) Object.assign(existing, entry);
+  else state.prs.push(entry);
+  t.meta = { ...(t.meta || {}), pr: { number, url, round: state.round } };
+  await logEvent(repoPath, `PR #${number} registrado en ${taskId} (round ${state.round})`);
+  await saveState(repoPath, state);
+  console.log(JSON.stringify({ ok: true, task: taskId, pr: existing || entry, prs: state.prs.length }, null, 2));
+}
+
 async function cmdSetStatus(next) {
   const state = need(await loadState(repoPath));
   if (next === "running") {
@@ -454,6 +506,7 @@ async function main() {
     case "status": return cmdStatus();
     case "next": return cmdNext();
     case "complete": return cmdComplete();
+    case "pr": return cmdPr();
     case "start": return cmdSetStatus("running");
     case "pause": return cmdSetStatus("paused");
     case "issues": return cmdIssues();
@@ -480,6 +533,10 @@ Comandos:
   serve <repo> [--port N] [--allow-repo <ruta>]  (panel web standalone, alias de runner/server.mjs)
   complete <repo> <taskId> [--fail|--force]
       (done exige informe no vacio en result_file; --force es la alternativa explicita)
+  pr <repo> <taskId> <url-o-número>  (registra el PR abierto por una tarea de implement en
+      state.prs y task.meta.pr; la fase implement emite entonces un work order de feedback
+      por PR del round — un solo pase por PR y round — que consume reviews, comentarios e
+      hilos de revisión sin resolver antes de cerrar la fase)
   issues <repo> [--dry|--dry-run]  (crea issues del draft + añade al Project; la simulacion
       no escribe en state.issues ni llama a gh: solo devuelve la previsualizacion)
   advance <repo> [--dry|--dry-run] (fuerza avance de fase; en simulacion solo previsualiza,

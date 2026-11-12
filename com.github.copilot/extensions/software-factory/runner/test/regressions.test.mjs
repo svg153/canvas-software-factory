@@ -2118,3 +2118,117 @@ test("#27 e2e: draft 100% fallido (determinista) no llega a implement con work o
   const creates = (await ghCalls(logPath)).filter((a) => a[0] === "issue" && a[1] === "create");
   assert.equal(creates.length, 1, "el determinista nunca se re-ejecuta");
 });
+
+// ── #33: bucle de feedback de PRs ────────────────────────────────────────────
+
+async function driveToImplementTask(run, repo) {
+  await writeFile(join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Alpha" }] }));
+  let out = JSON.parse((await run("next", repo)).stdout);
+  let iterations = 0;
+  while (!(out.phase === "implement" && (out.tasks || []).length === 1) && iterations++ < 30) {
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+    out = JSON.parse((await run("next", repo)).stdout);
+  }
+  assert.equal(out.phase, "implement", "el ciclo debía llegar a implement con 1 tarea");
+  return out.tasks[0];
+}
+
+test("sf pr valida entradas, deriva URLs y es idempotente por numero de PR (#33)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-pr-cmd-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  const impl = await driveToImplementTask(run, repo);
+
+  await assert.rejects(run("pr", repo, "no-existe", "https://github.com/org/repo/pull/9"), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /no existe/);
+    return true;
+  }, "taskId desconocido debe fallar");
+  await assert.rejects(run("pr", repo, impl.id, "no-es-un-pr"), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /No puedo extraer el número de PR/);
+    return true;
+  }, "sin numero extraible debe fallar");
+  await assert.rejects(run("pr", repo, impl.id), (error) => {
+    assert.equal(error.code, 2);
+    return true;
+  }, "faltan argumentos");
+
+  const bare = JSON.parse((await run("pr", repo, impl.id, "42")).stdout);
+  assert.equal(bare.ok, true);
+  assert.equal(bare.pr.number, 42);
+  assert.equal(bare.pr.url, "https://github.com/org/repo/pull/42", "numero suelto deriva la URL con state.repo");
+
+  const re = JSON.parse((await run("pr", repo, impl.id, "https://github.com/org/repo/pull/42?focused=1")).stdout);
+  assert.equal(re.prs, 1, "re-registrar el mismo numero no duplica state.prs");
+  assert.equal(re.pr.url, "https://github.com/org/repo/pull/42", "la URL limpia sustituye a la anterior");
+
+  const st = await loadState(repo);
+  assert.equal(st.prs.length, 1);
+  assert.equal(st.prs[0].round, 1);
+  assert.equal(st.prs[0].task_id, impl.id);
+  const tImpl = st.tasks.find((x) => x.id === impl.id);
+  assert.equal(tImpl.meta.pr.number, 42, "task.meta.pr queda registrado");
+  const events = await readFile(join(repo, ".software-factory", "events.log"), "utf8");
+  assert.match(events, /PR #42 registrado/);
+});
+
+test("PR registrado emite un work order de feedback, con un solo pase por PR y round (#33)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-pr-loop-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  const impl = await driveToImplementTask(run, repo);
+
+  await run("pr", repo, impl.id, "https://github.com/org/repo/pull/42");
+  await run("complete", repo, impl.id, "--force");
+
+  const fbOut = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(fbOut.phase, "implement", "con feedback pendiente la fase no avanza a review");
+  const fb = (fbOut.tasks || []).find((task) => /Feedback PR #42/.test(task.title));
+  assert.ok(fb, "debe emitirse el work order de feedback del PR");
+  const stFb = await loadState(repo);
+  const order = await readFile(stFb.tasks.find((task) => task.id === fb.id).prompt_file, "utf8");
+  assert.match(order, /reviewThreads/, "el work order debe leer hilos de revisión");
+  assert.match(order, /isResolved/, "solo hilos sin resolver");
+  assert.match(order, /gh pr view 42/, "el work order apunta al PR correcto");
+  assert.match(order, /deferred-feedback/, "lo fuera de alcance va al draft etiquetado");
+
+  await run("complete", repo, fb.id, "--force");
+  const adv = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(adv.phase, "review", "tras consumir el feedback la fase cierra");
+
+  const st = await loadState(repo);
+  const fbTasks = st.tasks.filter((task) => /Feedback PR #42/.test(task.title));
+  assert.equal(fbTasks.length, 1, "loop guard: un solo pase por PR y round");
+  assert.equal(fbTasks[0].source_task, impl.id, "el work order referencia la tarea de origen");
+});
+
+test("sin PRs registrados la fase implement avanza sin work orders de feedback (#33)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-pr-skip-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  const impl = await driveToImplementTask(run, repo);
+
+  await run("complete", repo, impl.id, "--force");
+  const adv = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(adv.phase, "review", "sin PRs se avanza directamente");
+  const st = await loadState(repo);
+  assert.equal(st.prs.length, 0);
+  assert.ok(!st.tasks.some((task) => /Feedback PR/.test(task.title)), "no hay work orders de feedback");
+});
