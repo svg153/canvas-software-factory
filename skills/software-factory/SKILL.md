@@ -42,16 +42,29 @@ en `<repo>/.software-factory/state.json`. Tú eres el **motor cognitivo**: ejecu
    guardan una semilla en `state.seeds`. No la trabajes a parte: se materializa en la fase `plan`
    del round que corresponda y recorre el mismo flujo (grill → issues → Project → implement →
    review). El `status` de la semilla (`new → planned → triaged`) lo mueve el runner, no tú.
+7. **Ingesta del repo (continuar un repo "a medias")**: `node <runner>/sf.mjs intake <repo>` (o el
+   canvas, acción `run_intake`) lee con `gh` el trabajo YA abierto —issues abiertas, PRs abiertas e
+   items del Project— y lo guarda en `state.inventory`. Es de SOLO LECTURA y resiliente (una fuente
+   que falla se degrada a `[]` con nota; nunca rompe el bucle). Ejecútala al arrancar un round 1
+   sobre un repo que ya tenga issues/PRs. Con inventario, `discover` y `plan` lo consumen: el
+   roadmap prioriza cerrar/avanzar lo abierto y **no recrea issues existentes**. Para CONTINUAR una
+   issue ya creada, escribe en el draft un ítem con su `number` real (`{ "title", "body", "number": 123 }`):
+   la fase `issues` la **adopta** (la registra en `state.issues` sin llamar a `gh issue create`) y
+   `implement` la toma como tarea. NUNCA pongas `number` en issues nuevas.
 
 ## Reglas por fase
 
 - **discover**: 10 debilidades priorizadas con evidencia archivo:línea. Rápido, sin edits.
+  Si `state.inventory` existe (ingesta previa), ten en cuenta el trabajo abierto: prioriza
+  cerrar/avanzar PRs sin revisar e issues a medio hacer además de las nuevas debilidades.
 - **plan**: estilo GSD (Goal → Spec → Deliverables), olas wave1 quick wins / wave2 estructural /
   wave3 deuda+seguridad. 6–12 issues en el draft JSON, criterios de aceptación medibles.
   Cada issue del draft lleva `id` (slug único, p. ej. `w1-auth`) y `depends_on` (lista de
   `id`s de issues que deben implementarse ANTES; usa `[]` si no hay dependencias). Modela
   el grafo de verdad: shared modules/migraciones van antes que sus consumidores; así la
   implementación será por olas y sin conflictos de merge en cascada.
+  Con `state.inventory`, NO dupliques títulos de issues ya abiertas; para continuar una issue
+  existente añade su `number` real al ítem del draft (la fase issues la adopta sin recrearla).
   Si hay **semillas de usuario pendientes** (`state.seeds` con `status:"new"`), el work order
   las lista: descompón CADA idea en 1 o más issues del draft con label `user-idea` y campos
   extra `origin:"user"` + `seed_id` (prioritarias sobre la auditoría). El runner marca la semilla
