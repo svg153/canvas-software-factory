@@ -9,23 +9,41 @@ reviews/audits the round, and repeats for a bounded number of rounds.
 
 | Component | Path | Purpose |
 |---|---|---|
-| Canvas extension | `com.github.copilot/extensions/software-factory/` | Control panel: live pipeline (SSE), tasks, created issues, Play/Pause. Play sends the kick-off prompt to the session agent via `session.send`. |
-| Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase and executes the mechanical `issues` phase (`gh issue create` + `gh project item-add`). |
+| Canvas extension | `com.github.copilot/extensions/software-factory/` | GitHub-Project-style panel with tabs: live pipeline (SSE), tasks, created issues, seeds (user ideas), repo inventory (intake) and an "Ingestar repo" button, Play/Pause — plus a **kanban board** (Backlog/Ready/In Progress/In Review/Done) synced to the GitHub Project, a **dependency graph** laid out wave-by-wave top-to-bottom, and a **merge order** view. Play sends the kick-off prompt to the session agent via `session.send`. |
+| Runner CLI | `com.github.copilot/extensions/software-factory/runner/sf.mjs` | State machine in `<repo>/.software-factory/`: emits work orders per phase, executes the mechanical `issues` phase (`gh issue create` + `gh project item-add` + dependency wiring + repo intake inventory), and gates `implement` by **dependency waves** so issues are never all implemented at once (fewer merge conflicts). |
+| Graph lib | `com.github.copilot/extensions/software-factory/runner/lib/graph.mjs` | Pure dependency resolution + Kahn wave layering (with cycle breaking), claimable/blocked gating and kanban-column derivation. Canonical logic; `ui.mjs` mirrors it for the browser. |
 | Skill | `skills/software-factory/SKILL.md` | The loop contract the agent follows (phases, subagents, rules). |
 
 Phases: `discover → plan → grill → issues → implement → review` · rounds capped by
-`max_rounds` (default 3) · `pause` stops re-cruitment at any time.
+`max_rounds` (default 3) · `pause` stops re-cruitment at any time · inside `implement`,
+issues are released in dependency waves (`next` returns claimable tasks plus a `blocked`
+list; blocked issues never launch early).
 
 ## Requirements
 
-- Node 20+, `gh` CLI authenticated (issues/Project phase), a GitHub Project number if you
-  want issues enqueued (`gh project list`).
+- Node 20+, `gh` CLI authenticated (issues/Project phase). A GitHub Project is optional:
+  if the repo has none, the panel's **Crear board GitHub** button (`gh project create`)
+  makes a kanban board and links it; **Sincronizar board** pushes issue statuses to it.
 - GitHub Copilot desktop app with canvas extensions enabled.
 - For `install.ps1` and the install test suite: PowerShell 7+ (`pwsh`) on Windows, as
   used by CI. `@github/copilot-sdk` is resolved by the app's canvas runtime, so a fresh
   install does not need `node_modules`.
 
 ## Install
+
+**Universal install (any OS, any harness; Node 20+, no dependencies):**
+
+```bash
+node tools/sf-install.mjs --harness <copilot|claude|codex|opencode|generic> [--home DIR] [--dry-run]
+node tools/sf-install.mjs --harness <x> --check   # read-only; also prints `STALE: <path>` for installed runner files no longer in the repo (never deletes); exit 1 + reinstall hint if the installed copy drifts from plugin.json
+```
+
+It copies the dependency-free runner plus `SKILL.md` to the harness convention
+(`~/.copilot|.claude|.codex/skills/software-factory`, `~/.config/opencode/skill/software-factory`)
+or, for `generic`, appends an idempotent marked block to `~/AGENTS.md` (runner in
+`~/.software-factory/runner`). It is additive (never deletes), validates the source before
+writing, and records a version marker (`.sf-install.json`) used by `--check`.
+`--dry-run` lists actions without writing; `--home` overrides the home directory.
 
 **Option A — installer script (Windows):**
 
@@ -102,14 +120,59 @@ node ~/.copilot/extensions/software-factory/runner/sf.mjs init C:\path\to\repo `
 #    session, so the panel starts without a repo: type the absolute path of your
 #    git workspace in the "Repo" field and press "Usar repo" (or open the canvas
 #    with input.repo=<absolute path> if your client supports passing open input).
+#    On "Usar repo" the panel auto-detects owner/repo from `git remote origin` and
+#    the GitHub Project linked to the repo (single match fills "Project board ID"
+#    and owner; several are listed in the log). "Detectar" repeats this on demand.
 
 # 3. ▶ Play. Watch the pipeline; the agent executes work orders and marks them done.
 #    ⏸ Pause anytime. State lives in <repo>/.software-factory/.
+
+# 4. (Optional) Inject your own idea — "vocal idea". Type it in the canvas idea box
+#    (or run the CLI below) at any moment. It is stored as a *seed* and the NEXT
+#    `plan` phase decomposes it into 1+ issues (label `user-idea`, `origin: user`)
+#    that go through grill → issues → Project → implement → review exactly like the
+#    audit issues. It never launches its own round.
+node ~/.copilot/extensions/software-factory/runner/sf.mjs idea C:\path\to\repo "mi idea"
+
+# 5. (Optional) Continue a "half-done" repo. If the repo already has open issues,
+#    open PRs and Project items, run an *intake* before round 1 (or press the canvas
+#    "Ingestar repo" button). It reads them with `gh` (read-only, resilient: a failing
+#    source degrades to [] with a note) into `state.inventory`. `discover`/`plan` then
+#    fold the roadmap around what is already open and never recreate existing issues.
+#    To keep working an existing issue, put its real `number` in the draft item and the
+#    `issues` phase adopts it (records it in state.issues without calling gh create).
+node ~/.copilot/extensions/software-factory/runner/sf.mjs intake C:\path\to\repo
 ```
 
 A finished factory (`status=done`) is terminal: `start` and canvas ▶ Play refuse to
 reopen it and `next` emits no further tasks. To run a new execution, re-`init` the
 repo with `--force` (see contract below).
+
+### Headless quickstart (no Copilot App)
+
+```powershell
+# First init + start the factory, then run headless:
+node runner/sf.mjs init C:\path\to\repo --repo owner/name; node runner/sf.mjs start C:\path\to\repo
+node runner/sf-run.mjs C:\path\to\repo --harness codex [--model X] [--max-tasks 5] [--timeout 600] [--dry-run] [--yes]
+```
+
+Loop: `next` → adapter `run()` (cwd=repo) → report check → `complete` (or `complete --fail`
+with a note in `state.notes`) until no pending tasks, `--max-tasks`, or the factory is
+paused/done. Failed tasks are never retried within a run. Without `--yes` only read-only
+work orders (discover/plan/grill/review) run; `implement` tasks are listed as skipped.
+`--dry-run` prints the plan and spawns nothing. Ctrl+C leaves the task `awaiting_agent`.
+To revert work from a failed implement task: `git reset --hard <previous commit>` or
+discard the working branch.
+
+### Configuración de harness y modelo
+
+`sf.mjs init <repo> --repo o/r --harness codex --model X` guarda `harness`/`model` en
+`.software-factory/state.json`; `sf-run` los usa sin flags. Precedencia: **flags CLI > state.json > default**
+(`auto` = primer CLI disponible). Un harness o modelo inválido en config o flags falla de inmediato
+listando los ids válidos. El registro canónico (ids, binario, entrega del prompt, shim de Windows) vive
+**solo** en `runner/lib/harnesses.mjs`; `state.mjs` y `adapters/` lo importan.
+
+La fábrica también puede ejecutarse sin Copilot App con Claude Code, Codex, OpenCode o Gemini CLI: instala el skill en el arnés, `sf.mjs init`, y alimenta el CLI con `sf.mjs next --print-prompt` (algunas piezas, en progreso). Matriz de CLIs, flags y quickstart en [docs/harnesses.md](docs/harnesses.md). Orden de merge del tren de PRs abiertos en [docs/merge-order.md](docs/merge-order.md).
 
 ## Runner contract (v2 semantics)
 
@@ -147,6 +210,29 @@ repo with `--force` (see contract below).
 - **`state.json` is written atomically** (unique temp file + rename): a crash mid
   write leaves the previous state intact. It does not protect against concurrent
   lost updates; drive one factory per repo from one process at a time.
+- **User ideas are seeds that ride the rounds.** `idea <repo> "<text>"` (canvas
+  `add_idea`) appends a seed `{ id, text, origin: user, status: new, created_at }`
+  to `state.seeds`; it does not create issues or start a round. The runner (not the
+  agent) owns the lifecycle transitions inside `advance()`: leaving `plan` flips
+  `new → planned`, leaving `grill` flips `planned → triaged`. `planPrompt` only
+  materializes seeds still in `new`. A **cutoff guard** makes this race-safe: when
+  leaving `plan`, only seeds with `created_at <= <plan work order's created_at>`
+  are consumed, so an idea added *after* the current plan was emitted stays `new`
+  and is picked up by the next round's plan instead of being silently marked done.
+  Extra draft fields (`origin`, `seed_id`) are ignored by `createIssuesFromDraft`,
+  and title de-duplication against `state.issues` means a seed can never double-create.
+- **Repo intake continues a half-done repo.** `intake <repo>` (canvas `run_intake`)
+  calls `readRepoInventory`: `gh issue list`/`gh pr list` (open, up to 200) and, when a
+  Project is configured, `gh project item-list`, storing a snapshot in `state.inventory`
+  (`{ fetched_at, issues, prs, project, notes }`). It is **read-only and resilient**: each
+  source that fails degrades to `[]` with a note and never throws, so intake can't break
+  the loop; only an invalid `owner/name` slug throws (and `cmdIntake` catches it into a
+  note). `discoverPrompt`/`planPrompt` (round 1) consume the inventory to prioritize
+  closing/advancing open work and to avoid recreating existing issues. `createIssuesFromDraft`
+  **adopts** a draft item that carries a real numeric `number`: it records the issue in
+  `state.issues` (flagged `adopted: true`) and adds it to the Project **without** calling
+  `gh issue create`, de-duplicating by title *and* number, and in `--dry` it only previews.
+  A new issue must never carry a `number`.
 - **No simulation mode in production.** Nothing in `sf.mjs` or `lib/gh.mjs` reads an
   environment variable to divert `gh` calls, and no state entry is ever marked as
   simulated: a previous `SF_FAKE_GH` hook was removed because its entries polluted
@@ -164,6 +250,12 @@ repo with `--force` (see contract below).
   *your* account. Note, however, that work orders and result files are agent-written
   text and may quote repository content: review them before committing anywhere. We
   do not guarantee that no secret ever ends up in `.software-factory/`.
+- **Issue bodies are an untrusted data surface.** Anyone who can edit an issue could try
+  to inject instructions into the implementation agent. `implementPrompt` frames issue
+  content between `<<<DATO-DE-ISSUE … DATO-DE-ISSUE>>>` markers (with embedded `<<<`/`>>>`
+  neutralized), tells the agent it is content and not instructions, and requires the
+  agent to check the issue is still open, never read or emit credentials, never merge,
+  and leave the PR for human review.
 - This repo's `.gitignore` covers this repo only. When the factory targets **another**
   repo, `<repo>/.software-factory/` is *not* automatically ignored there — add it to
   that repo's `.gitignore` (or delete the folder) before committing.

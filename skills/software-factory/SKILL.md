@@ -26,20 +26,61 @@ en `<repo>/.software-factory/state.json`. Tú eres el **motor cognitivo**: ejecu
    - Marca `node <runner>/sf.mjs complete <repoPath> <taskId>`.
 4. Repite 2–3. Cuando la fase se vacía, el runner avanza solo a la siguiente:
    - `issues` es mecánica: el runner ejecuta `gh issue create` + `gh project item-add`
-     con `<repo>/.software-factory/issues-draft.json`. NO la trabajes tú. Si el Project
-     pertenece a un owner distinto del repo, inicializa con `--project-owner <owner>`.
+     con `<repo>/.software-factory/issues-draft.json` y resuelve las dependencias
+     (`depends_on`) a números reales guardando el grafo en `state.issues`. NO la trabajes tú.
+     Si el Project pertenece a un owner distinto del repo, inicializa con `--project-owner <owner>`.
+   - `implement` se emite **por olas de dependencias**: `next` solo te da las issues
+     *reclamables* (todas sus dependencias ya completadas); las bloqueadas aparecen en
+     el array `blocked` del JSON. No adelantás trabajo de olas futuras.
    - Tras `review`, el runner abre el siguiente round o termina (`max_rounds`).
 5. Nunca saltes `grill`: el plan debe autocrítica antes de crear issues.
+6. **Board GitHub**: si el repo no tiene Project, el canvas (o `sf.mjs` vía acción
+   `create_project`) crea un board kanban con `gh project create` y lo enlaza. La acción
+   `sync_project` empuja el estado de cada issue al campo Status (Backlog/Todo/In
+   Progress/In Review/Done). Puedes lanzarla cuando quieras desde el panel.
+7. **Ideas del usuario**: el canvas (acción `add_idea`) o `node <runner>/sf.mjs idea <repo> "texto"`
+   guardan una semilla en `state.seeds`. No la trabajes a parte: se materializa en la fase `plan`
+   del round que corresponda y recorre el mismo flujo (grill → issues → Project → implement →
+   review). El `status` de la semilla (`new → planned → triaged`) lo mueve el runner, no tú.
+7. **Ingesta del repo (continuar un repo "a medias")**: `node <runner>/sf.mjs intake <repo>` (o el
+   canvas, acción `run_intake`) lee con `gh` el trabajo YA abierto —issues abiertas, PRs abiertas e
+   items del Project— y lo guarda en `state.inventory`. Es de SOLO LECTURA y resiliente (una fuente
+   que falla se degrada a `[]` con nota; nunca rompe el bucle). Ejecútala al arrancar un round 1
+   sobre un repo que ya tenga issues/PRs. Con inventario, `discover` y `plan` lo consumen: el
+   roadmap prioriza cerrar/avanzar lo abierto y **no recrea issues existentes**. Para CONTINUAR una
+   issue ya creada, escribe en el draft un ítem con su `number` real (`{ "title", "body", "number": 123 }`):
+   la fase `issues` la **adopta** (la registra en `state.issues` sin llamar a `gh issue create`) y
+   `implement` la toma como tarea. NUNCA pongas `number` en issues nuevas.
 
 ## Reglas por fase
 
 - **discover**: 10 debilidades priorizadas con evidencia archivo:línea. Rápido, sin edits.
+  Si `state.inventory` existe (ingesta previa), ten en cuenta el trabajo abierto: prioriza
+  cerrar/avanzar PRs sin revisar e issues a medio hacer además de las nuevas debilidades.
 - **plan**: estilo GSD (Goal → Spec → Deliverables), olas wave1 quick wins / wave2 estructural /
   wave3 deuda+seguridad. 6–12 issues en el draft JSON, criterios de aceptación medibles.
+  Cada issue del draft lleva `id` (slug único, p. ej. `w1-auth`) y `depends_on` (lista de
+  `id`s de issues que deben implementarse ANTES; usa `[]` si no hay dependencias). Modela
+  el grafo de verdad: shared modules/migraciones van antes que sus consumidores; así la
+  implementación será por olas y sin conflictos de merge en cascada.
+  Con `state.inventory`, NO dupliques títulos de issues ya abiertas; para continuar una issue
+  existente añade su `number` real al ítem del draft (la fase issues la adopta sin recrearla).
+  Si hay **semillas de usuario pendientes** (`state.seeds` con `status:"new"`), el work order
+  las lista: descompón CADA idea en 1 o más issues del draft con label `user-idea` y campos
+  extra `origin:"user"` + `seed_id` (prioritarias sobre la auditoría). El runner marca la semilla
+  como `planned` solo si ya existía cuando se emitió el plan; una idea añadida a mitad de round
+  espera al próximo plan.
 - **grill**: contéstote tú mismo el debate (estilo grill-me): objeción → respuesta →
-  **opción recomendada** y aplica el ajuste al draft. No preguntes al usuario.
-- **implement**: una rama `task/issue-<n>` por issue, PR con `Closes #n`, gates de
-  build/lint/tests del repo pasando.
+  **opción recomendada** y aplica el ajuste al draft. No preguntes al usuario. Audita
+  además el **grafo de dependencias**: sin ciclos, sin aristas a issues inexistentes,
+  orden topológico coherente con las olas del plan. Las issues
+  `user-idea` se trían con el mismo criterio que las de auditoría: **pueden pasar o tacharse**,
+  no tienen pase automático. El runner marca `planned → triaged` al cerrar la fase.
+- **implement**: SOLO las issues que el runner te entregue (están en orden por olas de
+  dependencias; las que bloquean no aparecen hasta que sus dependencias terminen).
+  Una rama `task/issue-<n>` por issue, PR con `Closes #n`, gates de
+  build/lint/tests del repo pasando. Si una dependencia aún no está en la rama base,
+  apila tu rama sobre `origin/task/issue-<dep>` y déjalo constado en la descripción del PR.
 - **review**: subagente code-review + security-review sobre los PRs del round; añade
   nuevas oportunidades al draft para el siguiente round; veredicto SÍ/NO continuar.
 

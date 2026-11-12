@@ -1,4 +1,4 @@
-import { createInitPayload, renderState, routeWithRepo } from "/ui.mjs";
+import { createInitPayload, renderGithub, renderState, routeWithRepo } from "/ui.mjs";
 
 const params = new URLSearchParams(location.search);
 let repo = params.get("repo") || "";
@@ -6,7 +6,26 @@ let events = null;
 let sseDown = false;
 let loadSeq = 0;
 let repoSeq = 0;
+let lastState = null;
+let lastGithub = null;
 const LOG_CAP = 200;
+
+// Números de issue conocidos por el state que ya NO están entre las abiertas de
+// GitHub: alimentan la columna Done del tablero (solo si hay lectura reciente).
+function closedNumbers(state) {
+  if (!lastGithub || !Array.isArray(lastGithub.issues) || !state?.issues) return null;
+  const open = new Set(lastGithub.issues.map((i) => Number(i.number)));
+  const closed = new Set();
+  for (const i of state.issues) {
+    const n = Number(i.number);
+    if (Number.isFinite(n) && !open.has(n)) closed.add(n);
+  }
+  return closed;
+}
+
+function renderAll() {
+  renderState(lastState, document, closedNumbers(lastState));
+}
 
 function log(message) {
   const element = document.getElementById("log");
@@ -71,8 +90,14 @@ function updatePreFlight() {
   el.textContent = `Al arrancar se crearán issues y PRs en ${ghrepo || "el repo configurado"}, hasta ${rounds} rounds. Puedes pausar en cualquier momento.`;
 }
 
-// Token CSRF expuesto por el servidor en el HTML (meta sf-action-token).
-const actionToken = document.querySelector('meta[name="sf-action-token"]')?.content || "";
+// El token se obtiene de /token (mismo origen); no va incrustado en el HTML.
+// Si /token falla (server caído) el panel sigue cargando y lo muestra en el log.
+let actionToken = "";
+try {
+  actionToken = (await (await fetch("/token")).json()).token || "";
+} catch (error) {
+  log(`error: ${error.message}`);
+}
 
 async function action(actionName, input = {}, btn) {
   if (btn) btn.disabled = true;
@@ -80,15 +105,16 @@ async function action(actionName, input = {}, btn) {
   try {
     const response = await fetch(routeWithRepo("/action", repo), {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-sf-action-token": actionToken },
+      headers: { "Content-Type": "application/json", "x-sf-token": actionToken },
       body: JSON.stringify({ actionName, input }),
     });
     const result = await response.json();
     if (result.error) {
-      log(`⚠ ${result.error}`);
+      log(`⚠ ${result.error}${result.message ? `: ${result.message}` : ""}`);
       showError(`«${actionName}» falló: ${result.error}. Corrige la configuración e inténtalo de nuevo.`);
     } else {
       log(`✔ ${result.status || JSON.stringify(result).slice(0, 120)}`);
+      if (result.needs_force) log(`el repo ya tiene estado: marca «Forzar reinicio» y vuelve a pulsar Init solo si quieres perder el progreso`);
       if (actionName === "play" || actionName === "init") setStartCard(true);
     }
     return result;
@@ -114,6 +140,7 @@ function applyConfig() {
     project: document.getElementById("project").value,
     projectOwner: document.getElementById("projectOwner").value,
     rounds: parseRounds(document.getElementById("rounds").value.trim()),
+    force: document.getElementById("forceInit")?.checked,
   }), document.getElementById("initBtn"));
 }
 
@@ -121,6 +148,86 @@ document.getElementById("play").onclick = () => action("play", {}, document.getE
 document.getElementById("pause").onclick = () => action("pause", {}, document.getElementById("pause"));
 document.getElementById("initBtn").onclick = applyConfig;
 document.getElementById("configToggle").onclick = () => setStartCard(!document.getElementById("startCard").hidden);
+document.getElementById("detectBtn").onclick = () => autofill();
+document.getElementById("ghBtn").onclick = () => refreshGithub();
+document.getElementById("importBtn").onclick = () => importExisting();
+document.getElementById("createBoardBtn").onclick = async () => {
+  const result = await action("create_project");
+  if (result && !result.error) {
+    log(result.created
+      ? `board creado: Project #${result.project_id}${result.url ? ` — ${result.url}` : ""}${(result.failures || []).length ? ` (avisos: ${result.failures.join("; ")})` : ""}`
+      : `ya había board vinculado: #${result.project_id}`);
+    await loadRepo().catch(() => {}); // refresca state (project_id nuevo) sin perder SSE
+  }
+};
+document.getElementById("syncBoardBtn").onclick = async () => {
+  const result = await action("sync_project");
+  if (result && !result.error) log(`sync board: ${result.updated} item(s) actualizados${result.failures ? `, ${result.failures} fallo(s)` : ""}`);
+};
+
+// Pestañas Pipeline / Tablero / Grafo / Orden de merge.
+const tabButtons = [...(document.getElementById("tabs")?.children || [])];
+function selectTab(name) {
+  for (const btn of tabButtons) btn.classList.toggle("active", btn.dataset.tab === name);
+  for (const id of ["pipeline", "board", "graph", "order"]) {
+    const section = document.getElementById(`tab-${id}`);
+    if (section) section.hidden = id !== name;
+  }
+}
+for (const btn of tabButtons) btn.addEventListener("click", () => selectTab(btn.dataset.tab));
+
+// #90: ver el estado real del repo en GitHub (issues/PRs abiertos) y poder continuar
+// trabajo existente en lugar de empezar siempre de cero.
+async function refreshGithub() {
+  const result = await action("github_status");
+  if (!result || result.error) return result;
+  renderGithub(result);
+  lastGithub = result;
+  renderAll();
+  log(`github${result.slug ? ` (${result.slug})` : ""}: ${result.issues?.length ?? 0} issues abiertas, ${result.pulls?.length ?? 0} PRs${result.note ? ` — ${result.note}` : ""}`);
+  return result;
+}
+
+// Vincula las issues abiertas al run: la fase issues no las duplicará al crear.
+async function importExisting() {
+  const result = await action("import_issues");
+  if (!result || result.error) return result;
+  log(`vinculadas ${result.imported} de ${result.open} issues abiertas (no se duplicarán al crear)`);
+  return result;
+}
+
+// #82/#83: rellena owner/repo desde el remote origin y el Project vinculado al repo.
+async function autofill() {
+  const result = await action("autofill");
+  if (!result || result.error) return result;
+  if (result.github_repo) {
+    document.getElementById("ghrepo").value = result.github_repo;
+    log(`owner/repo detectado: ${result.github_repo}`);
+  } else {
+    log(`owner/repo: ${result.note || "sin detectar"} — escríbelo a mano si hace falta`);
+  }
+  const projects = result.projects || [];
+  if (projects.length === 1) {
+    document.getElementById("project").value = String(projects[0].number);
+    document.getElementById("projectOwner").value = projects[0].owner || "";
+    log(`Project detectado: #${projects[0].number} «${projects[0].title}»`);
+  } else if (projects.length > 1) {
+    log(`varios Projects: ${projects.map((p) => `#${p.number} ${p.title}`).join(", ")} — escribe el nº que quieras usar`);
+  } else if (result.github_repo) {
+    log(result.note ? `Project sin detectar: ${result.note}` : "el repo no tiene ningún Project vinculado; deja el campo vacío");
+  }
+  return result;
+}
+
+document.getElementById("ideaBtn").onclick = async () => {
+  const input = document.getElementById("ideaText");
+  const idea = input.value.trim();
+  if (!idea) { log("⚠ escribe una idea antes de pulsar Añadir idea"); return; }
+  const result = await action("add_idea", { idea });
+  if (result && !result.error) input.value = "";
+};
+
+document.getElementById("intakeBtn").onclick = () => action("run_intake");
 
 function showRepoPath(text) {
   const repoPathEl = document.getElementById("repopath");
@@ -134,20 +241,22 @@ async function loadRepo() {
   const seq = ++loadSeq;
   if (events) events.close?.();
   events = null;
-  const state = await (await fetch(routeWithRepo("/state", repo))).json();
+  const state = await (await fetch(routeWithRepo("/state", repo), { headers: { "x-sf-token": actionToken } })).json();
   if (seq !== loadSeq) return null;
   if (state.error) throw new Error(state.error);
   showRepoPath(state.repo || repo);
   const current = state.status === "missing" ? null : state;
-  renderState(current);
+  lastState = current;
+  renderAll();
   if (current) setStartCard(true);
-  events = new EventSource(routeWithRepo("/events", repo));
+  events = new EventSource(`${routeWithRepo("/events", repo)}${repo ? "&" : "?"}token=${encodeURIComponent(actionToken)}`);
   events.onmessage = (event) => {
     if (sseDown) {
       sseDown = false;
       log("conexión SSE recuperada");
     }
-    renderState(JSON.parse(event.data));
+    lastState = JSON.parse(event.data);
+    renderAll();
   };
   events.onerror = () => {
     sseDown = true;
@@ -172,6 +281,7 @@ async function applyRepoPath() {
     await loadRepo();
     if (seq !== repoSeq) return;
     log(`repo asignado: ${value}`);
+    await autofillOnSet();
     clearError();
     updatePreFlight();
   } catch (error) {
@@ -180,6 +290,16 @@ async function applyRepoPath() {
     log(`error: ${error.message}`);
     showError(`No se pudo usar la carpeta «${value}»: ${error.message}. Verifica la ruta e inténtalo de nuevo.`);
   }
+}
+
+// Al asignar un repo, rellenar owner/repo (y Project) salvo que el usuario haya
+// editado el campo a mano: solo sobrescribimos vacío o nuestro propio valor previo.
+let autoFilledRepo = "";
+async function autofillOnSet() {
+  const gh = document.getElementById("ghrepo");
+  if (gh.value && gh.value !== autoFilledRepo) return;
+  const result = await autofill();
+  if (result && result.github_repo) autoFilledRepo = result.github_repo;
 }
 
 document.getElementById("setRepo").onclick = applyRepoPath;

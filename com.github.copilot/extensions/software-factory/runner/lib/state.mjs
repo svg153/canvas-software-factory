@@ -19,6 +19,8 @@ export function paths(repoPath) {
   };
 }
 
+export { HARNESS_IDS as HARNESSES } from "./harnesses.mjs";
+
 export const nowIso = () => new Date().toISOString();
 
 export function defaultState(repoPath, opts = {}) {
@@ -27,14 +29,29 @@ export function defaultState(repoPath, opts = {}) {
     repo_path: repoPath,
     project_id: opts.project || "",
     project_owner: opts.projectOwner || opts.repo?.split("/")[0] || "",
+    harness: opts.harness || "",
+    model: opts.model || "",
     status: "idle", // idle | running | paused | done
     round: 1,
     max_rounds: Number(opts.rounds ?? 3),
     phase: "discover",
     tasks: [],
     issues: [],
+    // Ideas del usuario ("vocal ideas"): cada una es una semilla que la próxima
+    // fase plan descompone en 1+ issues. Ciclo: new -> planned (al salir de plan)
+    // -> triaged (al salir de grill). Status lo mueve la máquina de fases, no el agente.
+    seeds: [],
+    // Ingesta del repo: snapshot mecánico (gh) del trabajo YA abierto — issues y PRs
+    // abiertas y items del Project — para que un repo "a medias" continúe de forma
+    // autónoma. Lo rellena `sf.mjs intake`; null = aún sin ingesta.
+    inventory: null,
     updated_at: nowIso(),
   };
+}
+
+// Semillas pendientes de materializar: las que aún no ha visto ninguna fase plan.
+export function newSeeds(state) {
+  return (state.seeds || []).filter((s) => s.status === "new");
 }
 
 export async function loadState(repoPath) {

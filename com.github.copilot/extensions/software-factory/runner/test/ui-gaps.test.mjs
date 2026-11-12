@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
+import { createInitPayload, renderGithub, renderState, routeWithRepo } from "../../ui.mjs";
 
 const extDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (name) => readFileSync(join(extDir, name), "utf8");
@@ -43,6 +43,18 @@ test("createInitPayload usa claves del contrato init (repo = owner/repo de GitHu
     createInitPayload({ repo: "o/r", project: "5", projectOwner: "me", rounds: 2 }),
     { repo: "o/r", project: "5", project_owner: "me", rounds: 2 },
   );
+});
+
+test("#88: createInitPayload añade force solo cuando está marcado", () => {
+  assert.deepEqual(
+    createInitPayload({ repo: "o/r", project: "5", projectOwner: "me", rounds: 2, force: true }),
+    { repo: "o/r", project: "5", project_owner: "me", rounds: 2, force: true },
+  );
+  assert.deepEqual(
+    createInitPayload({ repo: "o/r", project: "5", projectOwner: "me", rounds: 2, force: false }),
+    { repo: "o/r", project: "5", project_owner: "me", rounds: 2 },
+  );
+  assert.equal("force" in createInitPayload({ repo: "o/r", project: "", projectOwner: "", rounds: 3 }), false);
 });
 
 test("routeWithRepo codifica el repo y omite query vacía", () => {
@@ -119,7 +131,7 @@ async function runApp({ search = "", token = "tok", state = { status: "running",
     fetch: async (url, opts) => {
       calls.push({ url, opts });
       if (fetchImpl) return fetchImpl(url, opts);
-      return { json: async () => (url.startsWith("/action") ? { status: "ok" } : state) };
+      return { json: async () => (url === "/token" ? { token } : url.startsWith("/action") ? { status: "ok" } : state) };
     },
   };
   for (const k of Object.keys(g)) Object.defineProperty(globalThis, k, { value: g[k], configurable: true, writable: true });
@@ -131,9 +143,11 @@ async function runApp({ search = "", token = "tok", state = { status: "running",
 
 test("app.mjs: carga /state, renderiza y se suscribe a /events con repo", async () => {
   const { els, calls, sources } = await runApp({ search: "?repo=C%3A%5Cx" });
-  assert.equal(calls[0].url, "/state?repo=C%3A%5Cx");
+  // Tras la fusión el panel pide primero /token y envía x-sf-token en /state.
+  assert.equal(calls[0].url, "/token");
+  assert.equal(calls[1].url, "/state?repo=C%3A%5Cx");
   assert.equal(els.status.textContent, "running");
-  assert.equal(sources[0].url, "/events?repo=C%3A%5Cx");
+  assert.equal(sources[0].url, "/events?repo=C%3A%5Cx&token=tok");
   sources[0].onmessage({ data: JSON.stringify({ status: "paused", phase: "plan" }) });
   assert.equal(els.status.textContent, "paused");
   sources[0].onerror();
@@ -150,7 +164,7 @@ test("app.mjs: acciones play/pause/init envían token y payload; errores se regi
   await els.play.onclick();
   const play = calls.find((c) => c.url === "/action");
   assert.equal(play.opts.method, "POST");
-  assert.equal(play.opts.headers["x-sf-action-token"], "tok");
+  assert.equal(play.opts.headers["x-sf-token"], "tok");
   assert.deepEqual(JSON.parse(play.opts.body), { actionName: "play", input: {} });
   assert.match(els.log.textContent, /✔ ok/);
 
@@ -175,6 +189,32 @@ test("app.mjs: respuesta con error y fallo de fetch inicial se registran en el l
   assert.equal(down.sources.length, 0);
 });
 
+test("app.mjs: setRepo autodetecta owner/repo y Project (#82/#83)", async () => {
+  const { els, calls } = await runApp({
+    fetchImpl: async (url, opts) => {
+      if (url.startsWith("/action")) {
+        const body = JSON.parse(opts.body);
+        if (body.actionName === "autofill") {
+          return { json: async () => ({ status: "autofill", github_repo: "o/r", projects: [{ number: 5, title: "Board", owner: "me" }] }) };
+        }
+        return { json: async () => ({ status: "ok" }) };
+      }
+      return { json: async () => ({ status: "running", phase: "plan" }) };
+    },
+  });
+  els.repoInput = { value: "C:\\x" };
+  await els.setRepo.onclick();
+  assert.equal(els.ghrepo.value, "o/r");
+  assert.equal(els.project.value, "5");
+  assert.equal(els.projectOwner.value, "me");
+  // Edición manual: no se pisa en siguientes «Usar repo».
+  els.ghrepo.value = "manual/x";
+  await els.setRepo.onclick();
+  assert.equal(els.ghrepo.value, "manual/x");
+  const autofills = calls.filter((c) => c.url.startsWith("/action") && JSON.parse(c.opts.body).actionName === "autofill");
+  assert.equal(autofills.length, 1);
+});
+
 test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas", () => {
   const src = read("extension.mjs");
   for (const name of ["get_state", "play", "pause", "init_factory", "next_work"]) {
@@ -183,13 +223,21 @@ test("extension.mjs: acciones, init_factory (github_repo vs repo-dir) y guardas"
   assert.match(src, /applyAction\(repoDir, "init", \{\s*repo: input\?\.github_repo,/);
   assert.match(src, /const repoDir = repoFrom\(input\)/);
   assert.match(src, /const repoFrom = \(input\) => allowlist\.resolve\(input\?\.repo\)/);
-  assert.match(src, /initRunnerArgs\(repoDir, input\)/);
-  assert.match(src, /startGuardError\(await readState\(repoDir\)\)/);
-  assert.match(src, /throw new CanvasError\("sf_unknown_action"/);
-  assert.equal((src.match(/windowsHide: true/g) || []).length, 2);
-  assert.match(src, /setInterval\([\s\S]*2500\)/);
-  assert.match(src, /clearInterval\(timer\)/);
-  assert.match(src, /server\.listen\(0, "127\.0\.0\.1"/);
+  // Tras la fusión la lógica de acciones vive en service.mjs (extension.mjs es cliente fino).
+  const svc = read(join("runner", "lib", "service.mjs"));
+  assert.match(svc, /initRunnerArgs\(repoDir, input\)/);
+  // #88: la rama init captura el exit 1 del runner y lo traduce (aviso needs_force o ActionError).
+  assert.match(svc, /if \(\/--force\/\.test\(detail\)\) return \{ status: "aviso", needs_force: true, message: detail \}/);
+  assert.match(svc, /throw new ActionError\("sf_init_fallo", detail\)/);
+  assert.match(svc, /startGuardError\(await readState\(repoDir\)\)/);
+  assert.match(svc, /throw new ActionError\("sf_unknown_action"/);
+  // Todo spawn del runner debe ocultar la consola: windowsHide en cada sitio execFile.
+  assert.ok((svc.match(/windowsHide: true/g) || []).length >= 2, "cada execFile debe ocultar la consola");
+  assert.match(svc, /promisify\(execFile\)/);
+  assert.match(svc, /setInterval\([\s\S]*2500\)/);
+  assert.match(svc, /clearInterval\(timer\)/);
+  assert.match(svc, /server\.listen\(port, "127\.0\.0\.1"/);
+  assert.match(src, /service\.listen\(0\)/);
 });
 
 test("index.html: ids que usan app.mjs/ui.mjs, token CSRF y módulo", () => {
@@ -197,8 +245,92 @@ test("index.html: ids que usan app.mjs/ui.mjs, token CSRF y módulo", () => {
   const ids = new Set([...(read("app.mjs") + read("ui.mjs")).matchAll(/getElementById\("(\w+)"\)/g)].map((m) => m[1]));
   assert.ok(ids.size >= 10);
   for (const id of ids) assert.ok(html.includes(`id="${id}"`), id);
-  assert.ok(html.includes('<meta name="sf-action-token" content="__SF_ACTION_TOKEN__"'));
+  // Tras la fusión el token se sirve por /token: nada de placeholders en el HTML.
+  assert.ok(!html.includes("__SF_ACTION_TOKEN__"));
   assert.ok(html.includes('<script type="module" src="/app.mjs">'));
+});
+
+// ---- #90: GitHub — trabajo existente ----
+
+test("renderGithub: contenido no confiable como texto y solo enlaces https", () => {
+  const doc = fakeDoc();
+  const evil = "<img src=x onerror=alert(1)>";
+  renderGithub({
+    issues: [
+      { number: 1, title: evil, url: "https://github.com/o/r/issues/1", labels: [evil, "bug"] },
+      { number: 2, title: "js", url: "javascript:alert(1)", labels: [] },
+    ],
+    pulls: [
+      { number: 3, title: "d", url: "https://github.com/o/r/pull/3", isDraft: true, mergeable: "CONFLICTING", checks: "fail" },
+      { number: 4, title: "bad", url: "no es url", isDraft: false, mergeable: "MERGEABLE", checks: "none" },
+    ],
+  }, doc);
+  const all = [...walk(doc.els.ghIssues), ...walk(doc.els.ghPulls)];
+  assert.ok(all.every((e) => !e.innerHTMLSet));
+  const rows = doc.els.ghIssues.children;
+  assert.equal(rows[0].children[0].tag, "a");
+  assert.equal(rows[0].children[0].rel, "noopener noreferrer");
+  assert.equal(rows[1].children[0].tag, "span");
+  assert.ok(doc.els.ghIssues.textContent.includes(evil));
+  const prs = doc.els.ghPulls.children;
+  assert.equal(prs[0].children[0].tag, "a");
+  assert.match(prs[0].children[1].textContent, /draft · conflictos · fail/);
+  assert.equal(prs[1].children[1].textContent, "abierto");
+});
+
+test("renderGithub: resultado vacío o nulo muestra estados vacíos", () => {
+  const doc = fakeDoc();
+  renderGithub(null, doc);
+  assert.match(doc.els.ghIssues.textContent, /Actualizar GitHub/);
+  assert.match(doc.els.ghPulls.textContent, /Actualizar GitHub/);
+  renderGithub({ issues: [], pulls: [] }, doc);
+  assert.match(doc.els.ghIssues.textContent, /Actualizar GitHub/);
+});
+
+test("app.mjs: ghBtn/importBtn llaman github_status/import_issues y registran el resultado", async () => {
+  const { els, calls } = await runApp({
+    fetchImpl: async (url, opts) => {
+      if (url.startsWith("/action")) {
+        const body = JSON.parse(opts.body);
+        if (body.actionName === "github_status") {
+          return { json: async () => ({ status: "github_status", slug: "o/r", issues: [{ number: 5, title: "Algo", url: "https://github.com/o/r/issues/5", labels: ["enhancement"] }], pulls: [{ number: 7, title: "PR", url: "https://github.com/o/r/pull/7", isDraft: false, mergeable: "MERGEABLE", checks: "pass" }], note: "" }) };
+        }
+        if (body.actionName === "import_issues") {
+          return { json: async () => ({ status: "import_issues", imported: 3, open: 5 }) };
+        }
+        return { json: async () => ({ status: "ok" }) };
+      }
+      return { json: async () => ({ status: "running", phase: "plan" }) };
+    },
+  });
+  // Sin auto-refresh al cargar: tras /token, la primera llamada de datos es /state.
+  assert.equal(calls[0].url, "/token");
+  assert.equal(calls[1].url, "/state");
+  await els.ghBtn.onclick();
+  assert.deepEqual(JSON.parse(calls.at(-1).opts.body), { actionName: "github_status", input: {} });
+  assert.match(els.ghIssues.textContent, /#5 Algo/);
+  assert.match(els.ghPulls.textContent, /#7 PR/);
+  assert.match(els.log.textContent, /1 issues abiertas, 1 PRs/);
+  await els.importBtn.onclick();
+  assert.deepEqual(JSON.parse(calls.at(-1).opts.body), { actionName: "import_issues", input: {} });
+  assert.match(els.log.textContent, /vinculadas 3 de 5/);
+});
+
+test("extension.mjs: ramas github_status/import_issues (#90)", () => {
+  const src = read("extension.mjs");
+  for (const name of ["github_status", "import_issues"]) {
+    assert.ok(src.includes(`name: "${name}"`), name);
+  }
+  // El enrutado y la lógica de #90 viven en service.mjs tras la fusión.
+  const svc = read(join("runner", "lib", "service.mjs"));
+  for (const name of ["github_status", "import_issues"]) {
+    assert.ok(svc.includes(`actionName === "${name}"`), name);
+  }
+  assert.match(svc, /getGithubStatus\(slug\)/);
+  assert.match(svc, /importOpenIssues\(state, \{/);
+  assert.match(svc, /saveState\(repoDir, state\)/);
+  // El fallo de importación se traduce a mensaje fijo: nada del estado del run al exterior.
+  assert.match(svc, /no se pudieron vincular las issues/);
 });
 
 test("app.mjs: la tarjeta de arranque se colapsa al haber fábrica y tras play/init", async () => {

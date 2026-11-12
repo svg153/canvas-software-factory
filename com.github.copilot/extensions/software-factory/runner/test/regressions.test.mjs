@@ -12,8 +12,8 @@ import { request as httpRequest } from "node:http";
 import { createFactoryServer } from "../lib/http.mjs";
 import { createRepoAllowlist } from "../lib/allowlist.mjs";
 import { symlink } from "node:fs/promises";
-import { createIssuesFromDraft, projectItemAddArgs, repoSlug } from "../lib/gh.mjs";
-import { initRunnerArgs, startGuardError } from "../lib/actions.mjs";
+import { createIssuesFromDraft, projectItemAddArgs, readRepoInventory, repoSlug } from "../lib/gh.mjs";
+import { initRunnerArgs, ideaRunnerArgs, intakeRunnerArgs, startGuardError } from "../lib/actions.mjs";
 import { unclaimedIssues, failedTasks, loadState, saveState, updateState, withStateLock, paths, newTask, writeWorkOrder } from "../lib/state.mjs";
 import { bootstrapPrompt, discoverPrompt, grillPrompt, planPrompt } from "../lib/prompts.mjs";
 import { createInitPayload, renderState, routeWithRepo } from "../../ui.mjs";
@@ -28,9 +28,8 @@ const runnerPath = join(extensionDir, "runner", "sf.mjs");
 
 // El token de acción se obtiene como la UI: leyendo el HTML servido por el propio servidor.
 async function actionTokenFrom(server) {
-  const html = await (await fetch(`http://127.0.0.1:${server.address().port}/`)).text();
-  const token = html.match(/name="sf-action-token" content="([0-9a-f]+)"/)?.[1];
-  assert.ok(token, "el HTML debe exponer el token de acción");
+  const token = (await (await fetch(`http://127.0.0.1:${server.address().port}/token`)).json()).token;
+  assert.ok(token, "/token debe entregar el token");
   return token;
 }
 
@@ -97,10 +96,11 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
-  const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`);
+  const tk = await actionTokenFrom(server);
+  const stateResponse = await fetch(`${baseUrl}${routeWithRepo("/state", selectedRepo)}`, { headers: { "x-sf-token": tk } });
   assert.equal((await stateResponse.json()).repo, canonicalRepo);
 
-  const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}`);
+  const eventsResponse = await fetch(`${baseUrl}${routeWithRepo("/events", selectedRepo)}&token=${tk}`);
   const reader = eventsResponse.body.getReader();
   const firstEvent = await reader.read();
   assert.equal(JSON.parse(new TextDecoder().decode(firstEvent.value).slice(6)).repo, canonicalRepo);
@@ -111,7 +111,7 @@ test("uses one selected repository for state, SSE, and action routes", async (t)
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
@@ -158,7 +158,7 @@ test("passes the form Project owner through the action route to runner arguments
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-sf-action-token": await actionTokenFrom(server),
+      "x-sf-token": await actionTokenFrom(server),
     },
     body: JSON.stringify({ actionName: "init", input: formPayload }),
   });
@@ -171,6 +171,68 @@ test("passes the form Project owner through the action route to runner arguments
     "--project-owner", "project-org",
     "--rounds", "4",
   ]);
+});
+
+test("#88: initRunnerArgs añade --force solo cuando input.force", () => {
+  assert.deepEqual(initRunnerArgs("C:\\repo", { repo: "o/r", force: true }), ["init", "C:\\repo", "--repo", "o/r", "--force"]);
+  assert.deepEqual(initRunnerArgs("C:\\repo", { repo: "o/r" }), ["init", "C:\\repo", "--repo", "o/r"]);
+});
+
+test("#88: /action difunde code y message de errores con .code propio", async (t) => {
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\session\\workspace",
+    readState: async () => null,
+    ensureWatch() {},
+    applyAction: async () => {
+      throw Object.assign(new Error("boom detalle del runner"), { code: "sf_init_fallo" });
+    },
+    subscribe() {},
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  t.after(() => new Promise((resolveClose, reject) => {
+    server.close((error) => error ? reject(error) : resolveClose());
+  }));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-sf-token": await actionTokenFrom(server),
+    },
+    body: JSON.stringify({ actionName: "init", input: {} }),
+  });
+  assert.equal(response.status, 400);
+  const result = await response.json();
+  assert.equal(result.error, "sf_init_fallo");
+  assert.equal(result.message, "boom detalle del runner");
+});
+
+test("#88: errores sin .code siguen cayendo al código genérico sf_solicitud_fallida", async (t) => {
+  const server = createFactoryServer({
+    extensionDir,
+    defaultRepo: () => "C:\\session\\workspace",
+    readState: async () => null,
+    ensureWatch() {},
+    applyAction: async () => {
+      throw new Error("inesperado");
+    },
+    subscribe() {},
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  t.after(() => new Promise((resolveClose, reject) => {
+    server.close((error) => error ? reject(error) : resolveClose());
+  }));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-sf-token": await actionTokenFrom(server),
+    },
+    body: JSON.stringify({ actionName: "init", input: {} }),
+  });
+  const result = await response.json();
+  assert.equal(result.error, "sf_solicitud_fallida");
+  assert.equal("message" in result, false, "errores sin code no deben difundir su message (posibles rutas internas)");
 });
 
 test("does not re-emit issue implementations across rounds or legacy task shapes", () => {
@@ -611,17 +673,17 @@ test("POST /action rejects missing or wrong CSRF token and accepts the HTML-expo
   assert.equal(response.status, 403);
   assert.match((await response.json()).error, /sf_csrf_token_invalido/);
 
-  response = await post({ "x-sf-action-token": "f".repeat(48) });
+  response = await post({ "x-sf-token": "f".repeat(48) });
   assert.equal(response.status, 403);
 
-  response = await post({ "x-sf-action-token": token });
+  response = await post({ "x-sf-token": token });
   assert.equal(response.status, 200);
   assert.deepEqual(applied, ["pause"]);
 
   // La UI debe enviar la cabecera con el mismo nombre que valida el servidor.
   const appSource = await readFile(join(extensionDir, "app.mjs"), "utf8");
-  assert.match(appSource, /x-sf-action-token/);
-  assert.match(appSource, /sf-action-token/);
+  assert.match(appSource, /x-sf-token/);
+  assert.match(appSource, /\/token/);
 
   // Cada instancia genera un token distinto.
   const server2 = createFactoryServer({
@@ -659,7 +721,7 @@ test("loopback server validates Host/Origin, caps bodies and hides paths", async
   const body = (actionName) => JSON.stringify({ actionName, input: {} });
   const post = (headers, payload = body("pause")) => fetch(`${baseUrl}/action`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-sf-action-token": token, ...headers },
+    headers: { "Content-Type": "application/json", "x-sf-token": token, ...headers },
     body: payload,
   });
   // fetch no permite forjar Host; http.request sí.
@@ -687,7 +749,7 @@ test("loopback server validates Host/Origin, caps bodies and hides paths", async
   const forgedPage = await rawRequest({ Host: `evil.example:${port}` });
   assert.equal(forgedPage.status, 403);
   assert.ok(!forgedPage.text.includes(token));
-  const forgedAction = await rawRequest({ Host: "evil.example", "x-sf-action-token": token, "Content-Type": "application/json" }, body("pause"));
+  const forgedAction = await rawRequest({ Host: "evil.example", "x-sf-token": token, "Content-Type": "application/json" }, body("pause"));
   assert.equal(forgedAction.status, 403);
   assert.equal(applied.length, 3);
 
@@ -744,6 +806,28 @@ test("full CLI cycle ends done at max_rounds without extra-round tasks", async (
   assert.deepEqual(after.tasks, []);
   assert.match(after.hint, /init/);
   assert.equal((await loadState(repo)).tasks.length, before, "next no debe emitir tareas tras done");
+});
+
+test("next --print-prompt prints only the work order; JSON mode unchanged; exit 3 when nothing to print", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-print-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  // pausada: stdout vacío, exit 3, hint por stderr
+  await run("pause", repo);
+  await assert.rejects(run("next", repo, "--print-prompt"), (e) => e.code === 3 && e.stdout === "" && /start/.test(e.stderr));
+  await run("start", repo);
+
+  const json = JSON.parse((await run("next", repo)).stdout);
+  assert.ok(json.tasks.length > 0 && json.tasks[0].prompt);
+  const plain = await run("next", repo, "--print-prompt");
+  assert.equal(plain.stdout, json.tasks[0].prompt);
+  const byId = await run("next", repo, "--print-prompt", "--task", json.tasks[0].id);
+  assert.equal(byId.stdout, json.tasks[0].prompt);
+  await assert.rejects(run("next", repo, "--print-prompt", "--task", "nope"), (e) => e.code === 3 && e.stdout === "");
 });
 
 test("start right after completing a phase's last task does not re-emit it", async (t) => {
@@ -804,7 +888,7 @@ test("start refuses a finished factory and keeps status done", async (t) => {
 });
 
 test("extension play guards a done factory via the shared startGuardError", async () => {
-  const extSource = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  const extSource = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
   assert.match(extSource, /startGuardError/);
   assert.match(extSource, /actionName === "play"[\s\S]{0,220}startGuardError/);
 });
@@ -1291,6 +1375,32 @@ test("init refuses a repo directory that does not exist", async (t) => {
   assert.equal(existsSync(missing), false, "init no crea el directorio de un repo inexistente");
 });
 
+test("init persists harness/model, status shows them, invalid harness rejected, old state loads", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-harness-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repoPath = join(tempDir, "repo");
+  await mkdir(repoPath);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await assert.rejects(run("init", repoPath, "--harness", "mario"), (err) => err.code === 1 && /codex/.test(err.stderr));
+  assert.equal(existsSync(join(repoPath, ".software-factory", "state.json")), false);
+
+  await run("init", repoPath, "--repo", "org/repo", "--harness", "codex", "--model", "gpt-5-codex");
+  const state = await loadState(repoPath);
+  assert.equal(state.harness, "codex");
+  assert.equal(state.model, "gpt-5-codex");
+  const status = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(status.harness, "codex");
+  assert.equal(status.model, "gpt-5-codex");
+
+  delete state.harness;
+  delete state.model;
+  await saveState(repoPath, state);
+  const old = JSON.parse((await run("status", repoPath)).stdout);
+  assert.equal(old.harness, "");
+  assert.equal(old.model, "");
+});
+
 test("?repo= allowlist rejects traversal, siblings and symlink escapes; accepts workspace and authorized roots", async (t) => {
   const base = await mkdtemp(join(tmpdir(), "sf-allow-"));
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -1323,10 +1433,11 @@ test("?repo= allowlist rejects traversal, siblings and symlink escapes; accepts 
   t.after(() => closeServer(server));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const token = await actionTokenFrom(server);
-  const get = (path, repo) => fetch(`${baseUrl}${routeWithRepo(path, repo)}`);
+  // Tras la fusión /state también exige token (antes solo /action en main).
+  const get = (path, repo) => fetch(`${baseUrl}${routeWithRepo(path, repo)}`, { headers: { "x-sf-token": token } });
   const post = (repo) => fetch(`${baseUrl}${routeWithRepo("/action", repo)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-sf-action-token": token },
+    headers: { "Content-Type": "application/json", "x-sf-token": token },
     body: JSON.stringify({ actionName: "pause", input: {} }),
   });
 
@@ -1402,7 +1513,8 @@ test("issue identity: number/url canonical, normalized title fallback, failed im
 });
 
 test("canvas writeStatus delegates to locked updateState and interleaved writes keep state.json parseable", async (t) => {
-  const src = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  // Tras la fusión, writeStatus vive en service.mjs y escribe bajo lock (updateState).
+  const src = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
   assert.match(src, /await updateState\(repoDir,/);
   assert.doesNotMatch(src, /writeFile/);
 
@@ -1430,6 +1542,165 @@ test("canvas writeStatus delegates to locked updateState and interleaved writes 
   assert.deepEqual(final.notes, ["keep"]);
   const leftovers = (await readdir(join(repo, ".software-factory"))).filter((n) => n.endsWith(".tmp"));
   assert.deepEqual(leftovers, []);
+});
+
+// ---------------------------------------------------------------------------
+// Ideas del usuario (semillas / "vocal ideas")
+// ---------------------------------------------------------------------------
+
+test("ideaRunnerArgs trims the idea and passes it as a positional argument", () => {
+  assert.deepEqual(ideaRunnerArgs("/repo", { idea: "  añadir OAuth  " }), ["idea", "/repo", "añadir OAuth"]);
+  assert.deepEqual(ideaRunnerArgs("/repo", {}), ["idea", "/repo", ""]);
+  assert.deepEqual(ideaRunnerArgs("/repo", { idea: 42 }), ["idea", "/repo", ""]);
+});
+
+test("planPrompt materializes pending user seeds as prioritized origin:user issues", () => {
+  const state = {
+    repo: "org/repo", repo_path: "/repo", round: 1, tasks: [],
+    seeds: [
+      { id: "seed1", text: "Añadir login con Google", status: "new" },
+      { id: "seed2", text: "Exportar a PDF", status: "planned" }, // ya consumida: no debe aparecer
+    ],
+  };
+  const prompt = planPrompt(state, { round: 1 });
+  assert.match(prompt, /Añadir login con Google/);
+  assert.match(prompt, /seed1/);
+  assert.match(prompt, /user-idea/);
+  assert.match(prompt, /origin/);
+  assert.doesNotMatch(prompt, /Exportar a PDF/, "solo las semillas new se re-materializan");
+
+  const noSeeds = planPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, tasks: [], seeds: [] }, { round: 1 });
+  assert.doesNotMatch(noSeeds, /IDEAS DEL USUARIO/);
+});
+
+test("grillPrompt triages user-idea issues with the same bar as the audit", () => {
+  const prompt = grillPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, tasks: [], seeds: [] }, { round: 1 });
+  assert.match(prompt, /user-idea/);
+  assert.match(prompt, /no tienen pase automático|NO tiene pase/i);
+});
+
+test("idea command stores a seed with status new; empty idea is rejected", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-idea-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args]);
+
+  await run("init", repo, "--repo", "org/repo");
+  const out = JSON.parse((await run("idea", repo, "quiero un modo oscuro")).stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.seed.status, "new");
+  assert.equal(out.seed.origin, "user");
+  assert.equal(out.seed.text, "quiero un modo oscuro");
+
+  const state = await loadState(repo);
+  assert.equal(state.seeds.length, 1);
+  assert.equal(state.seeds[0].id, "seed1");
+
+  await assert.rejects(run("idea", repo, "   "), (e) => /Idea vacía/.test(e.stderr));
+  // idea no admite simulación: se rechaza antes de escribir.
+  await assert.rejects(execFileAsync(process.execPath, [runnerPath, "idea", repo, "x", "--dry"]), (e) => e.code === 2);
+});
+
+test("seed rides the rounds: new -> planned (leaving plan) -> triaged (leaving grill), issue created once", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-seed-lifecycle-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+  const draftFile = join(repo, ".software-factory", "issues-draft.json");
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  await run("idea", repo, "OAuth con Google");
+
+  // discover
+  let out = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(out.phase, "discover");
+  for (const task of out.tasks) await run("complete", repo, task.id, "--force");
+
+  // plan: seed sigue "new"; el work order menciona la idea. El "agente" escribe el draft.
+  out = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(out.phase, "plan");
+  assert.match(out.tasks[0].prompt, /OAuth con Google/);
+  await writeFile(draftFile, JSON.stringify({
+    issues: [{ title: "OAuth con Google", body: "b", labels: ["user-idea"], origin: "user", seed_id: "seed1" }],
+  }));
+  await run("complete", repo, out.tasks[0].id, "--force");
+
+  // salir de plan -> planned
+  out = JSON.parse((await run("next", repo)).stdout);
+  assert.equal(out.phase, "grill");
+  assert.equal((await loadState(repo)).seeds[0].status, "planned");
+  await run("complete", repo, out.tasks[0].id, "--force");
+
+  // salir de grill -> triaged; la fase issues (mecánica) crea la issue con gh falso
+  out = JSON.parse((await run("next", repo)).stdout);
+  const state = await loadState(repo);
+  assert.equal(state.seeds[0].status, "triaged");
+  assert.ok(state.issues.some((i) => i.title === "OAuth con Google"), "la idea llegó a GitHub como issue");
+
+  // el ciclo termina sin duplicar la issue en rondas posteriores (rounds=1 -> done)
+  let iterations = 0;
+  while (out.status === "running" && iterations++ < 40) {
+    for (const task of out.tasks || []) await run("complete", repo, task.id, "--force");
+    out = JSON.parse((await run("next", repo)).stdout);
+  }
+  assert.equal(out.status, "done");
+  const final = await loadState(repo);
+  assert.equal(final.issues.filter((i) => i.title === "OAuth con Google").length, 1, "la idea se creó una sola vez");
+});
+
+test("a seed added after the plan work order waits for the next plan (cutoff guard)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-seed-cutoff-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+
+  await run("init", repo, "--repo", "org/repo", "--rounds", "1");
+  await run("start", repo);
+  let out = JSON.parse((await run("next", repo)).stdout); // discover
+  for (const task of out.tasks) await run("complete", repo, task.id, "--force");
+  out = JSON.parse((await run("next", repo)).stdout); // plan emitido
+  assert.equal(out.phase, "plan");
+  const planTask = (await loadState(repo)).tasks.find((t) => t.phase === "plan");
+
+  await new Promise((r) => setTimeout(r, 20)); // fuerza created_at estrictamente posterior
+  await run("idea", repo, "idea tardía");
+
+  await run("complete", repo, out.tasks[0].id, "--force");
+  out = JSON.parse((await run("next", repo)).stdout); // avanza plan -> grill
+  assert.equal(out.phase, "grill");
+  const state = await loadState(repo);
+  const late = state.seeds.find((s) => s.text === "idea tardía");
+  assert.equal(late.status, "new", "la semilla posterior al plan no se marca como consumida");
+  assert.ok(late.created_at > planTask.created_at);
+});
+
+test("canvas and UI wire add_idea to the idea action and render seeds", async () => {
+  const ext = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  assert.match(ext, /name: "add_idea"/);
+  assert.match(ext, /applyAction\(repoDir, "idea"/);
+
+  // El enrutado idea -> ideaRunnerArgs vive en service.mjs (lógica compartida).
+  const svc = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
+  assert.match(svc, /actionName === "idea"[\s\S]{0,240}ideaRunnerArgs/);
+
+  const app = await readFile(join(extensionDir, "app.mjs"), "utf8");
+  assert.match(app, /ideaBtn[\s\S]{0,320}action\("add_idea"/);
+
+  const doc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "seeds"]);
+  renderState({
+    status: "running", round: 1, max_rounds: 3, phase: "plan", tasks: [], issues: [],
+    seeds: [{ id: "seed1", text: "modo oscuro", status: "new" }],
+  }, doc);
+  const seedEl = doc.getElementById("seeds").children[0].children[0];
+  assert.equal(seedEl.textContent, "[new] modo oscuro");
+
+  // doc sin contenedor #seeds (como el test de render previo) no debe romperse
+  const minimal = new FakeDocument(["status", "round", "pipeline", "tasks", "issues"]);
+  renderState({ status: "running", round: 1, max_rounds: 3, phase: "plan", tasks: [], issues: [], seeds: [{ text: "x" }] }, minimal);
 });
 
 test("updateState serializes contenders: all mutations survive and lock is released", async (t) => {
@@ -1479,4 +1750,222 @@ test("crash mid-write leaves state.json parseable and writeWorkOrder is atomic",
   assert.equal(await readFile(task.prompt_file, "utf8"), "# orden\n");
   const src = await readFile(join(extensionDir, "runner", "lib", "state.mjs"), "utf8");
   assert.match(src, /atomicWrite\(task\.prompt_file/);
+  });
+
+  // ---------- Ingesta del repo (continuar un repo "a medias") ----------
+
+function makeRunGh(canned, calls = []) {
+  return async (args) => {
+    calls.push(args);
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify(canned.issues ?? []);
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify(canned.prs ?? []);
+    if (args[0] === "project" && args[1] === "item-list") return JSON.stringify({ items: canned.project ?? [] });
+    return "[]";
+  };
+}
+
+test("readRepoInventory parses issues/PRs/project arrays from gh json", async () => {
+  const calls = [];
+  const state = { repo: "org/repo", repo_path: "/repo", project_id: "17", project_owner: "org" };
+  const inv = await readRepoInventory(state, {
+    runGh: makeRunGh({
+      issues: [{ number: 5, title: "Bug login", url: "u5", labels: [] }],
+      prs: [{ number: 9, title: "Add dark mode", url: "u9", labels: [], reviewDecision: "REVIEW_REQUIRED" }],
+      project: [{ id: "PVTI_1", content: { number: 5 } }],
+    }, calls),
+  });
+  assert.equal(inv.issues.length, 1);
+  assert.equal(inv.issues[0].number, 5);
+  assert.equal(inv.prs[0].number, 9);
+  assert.equal(inv.project.length, 1);
+  assert.equal(inv.notes, "");
+  assert.ok(inv.fetched_at, "marca cuándo se tomó el snapshot");
+  // project item-list usa el owner explícito del project
+  const projCall = calls.find((c) => c[0] === "project");
+  assert.ok(projCall.includes("org"), "usa project_owner si está definido");
 });
+
+test("readRepoInventory is resilient: gh failures degrade to [] with a note, never throw", async () => {
+  const state = { repo: "org/repo", repo_path: "/repo", project_id: null };
+  const inv = await readRepoInventory(state, {
+    runGh: async (args) => {
+      if (args[0] === "issue") throw new Error("network down");
+      return "{}"; // salida no-array (como el gh falso de tests) -> []
+    },
+  });
+  assert.deepEqual(inv.issues, [], "fallo de gh -> [] en lugar de lanzar");
+  assert.deepEqual(inv.prs, [], "salida basura -> []");
+  assert.match(inv.notes, /issue list: network down/);
+});
+
+test("readRepoInventory throws only on invalid slug (intake catches it)", async () => {
+  await assert.rejects(
+    readRepoInventory({ repo: "not-a-slug", repo_path: "/repo" }, { runGh: async () => "[]" }),
+    /repo GitHub válido/,
+  );
+});
+
+test("createIssuesFromDraft adopts a draft item with a real number (no gh create, no duplicate)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-adopt-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(join(repo, ".software-factory"), { recursive: true });
+  await writeFile(
+    join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Terminar la feature X", body: "b", number: 55 }] }),
+  );
+  const state = { repo_path: repo, repo: "org/repo", project_id: null, issues: [], notes: "" };
+  const calls = [];
+  const created = await createIssuesFromDraft(state, {
+    runGh: async (args) => { calls.push(args); return "https://github.com/org/repo/issues/999"; },
+    persistState: async () => {},
+  });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].adopted, true);
+  assert.equal(created[0].number, 55);
+  assert.equal(state.issues.length, 1);
+  assert.equal(state.issues[0].number, 55);
+  assert.equal(state.issues[0].adopted, true);
+  // NUNCA se llamó a gh issue create (la issue ya existe)
+  assert.ok(calls.every((c) => !(c[0] === "issue" && c[1] === "create")), "adoptar no crea una issue nueva");
+});
+
+test("createIssuesFromDraft skips adopting a number already tracked", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-adopt-dup-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(join(repo, ".software-factory"), { recursive: true });
+  await writeFile(
+    join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Ya seguida", body: "b", number: 55 }] }),
+  );
+  const state = {
+    repo_path: repo, repo: "org/repo", project_id: null, notes: "",
+    issues: [{ title: "Ya seguida (distinto título)", url: "u", number: 55 }],
+  };
+  const calls = [];
+  const created = await createIssuesFromDraft(state, {
+    runGh: async (args) => { calls.push(args); return "https://github.com/org/repo/issues/999"; },
+    persistState: async () => {},
+  });
+    assert.equal(created.length, 0, "no se re-adopota un número ya presente");
+  assert.equal(state.issues.length, 1);
+});
+
+test("createIssuesFromDraft adoption in dry-run previews only, no gh, no state mutation", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-adopt-dry-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(join(repo, ".software-factory"), { recursive: true });
+  await writeFile(
+    join(repo, ".software-factory", "issues-draft.json"),
+    JSON.stringify({ issues: [{ title: "Adoptar en seco", body: "b", number: 77 }] }),
+  );
+  const state = { repo_path: repo, repo: "org/repo", project_id: null, issues: [], notes: "" };
+  const calls = [];
+  const created = await createIssuesFromDraft(state, {
+    dryRun: true,
+    runGh: async (args) => { calls.push(args); return "https://github.com/org/repo/issues/1"; },
+    persistState: async () => {},
+  });
+  assert.equal(created[0].adopted, true);
+  assert.equal(created[0].dry, true);
+  assert.equal(created[0].number, 77);
+  assert.deepEqual(calls, [], "dry-run no invoca gh");
+  assert.equal(state.issues.length, 0, "dry-run no muta state.issues");
+});
+
+test("intakeRunnerArgs builds the intake command", () => {
+  assert.deepEqual(intakeRunnerArgs("/some/repo"), ["intake", "/some/repo"]);
+});
+
+test("intake command stores inventory in state (fake gh yields empty arrays)", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "sf-intake-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const repo = join(tempDir, "repo");
+  await mkdir(repo);
+  const run = (...args) => execFileAsync(process.execPath, [runnerPath, ...args], { env: ghEnv(tempDir) });
+
+  await run("init", repo, "--repo", "org/repo");
+  const out = JSON.parse((await run("intake", repo)).stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.inventory.issues, 0);
+  assert.equal(out.inventory.prs, 0);
+
+  const state = await loadState(repo);
+  assert.ok(state.inventory, "state.inventory queda persistido");
+  assert.deepEqual(state.inventory.issues, []);
+  // intake sí llamó a gh (issue list + pr list)
+  const calls = await ghCalls(join(tempDir, "gh-calls.log"));
+  assert.ok(calls.some((c) => c[0] === "issue" && c[1] === "list"), "intake consulta issues abiertas");
+  assert.ok(calls.some((c) => c[0] === "pr" && c[1] === "list"), "intake consulta PRs abiertas");
+
+  // intake escribe estado: rechaza --dry igual que idea
+  await assert.rejects(execFileAsync(process.execPath, [runnerPath, "intake", repo, "--dry"], { env: ghEnv(tempDir) }), (e) => e.code === 2);
+});
+
+test("discoverPrompt folds in the inventory when present and hints intake when absent", () => {
+  const task = { round: 1, id: "r1-discover-01", result_file: "/repo/.software-factory/results/r1-discover-01.md" };
+  const withInv = discoverPrompt(
+    {
+      repo: "org/repo", repo_path: "/repo", round: 1,
+      inventory: { issues: [{ number: 5, title: "Bug login" }], prs: [{ number: 9, title: "Dark mode" }], project: [], notes: "" },
+    },
+    task,
+  );
+  assert.match(withInv, /TRABAJO YA ABIERTO/);
+  assert.match(withInv, /#5 Bug login/);
+  assert.match(withInv, /PR #9 Dark mode|PRs abiertas/);
+  assert.match(withInv, /cerrar|avanzar/i);
+
+  const noInv = discoverPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, inventory: null }, task);
+  assert.match(noInv, /intake/, "sin inventario sugiere ejecutar intake");
+});
+
+test("planPrompt dedups against inventory and explains adoption via number", () => {
+  const state = {
+    repo: "org/repo", repo_path: "/repo", round: 1, tasks: [],
+    inventory: {
+      issues: [{ number: 5, title: "Bug login" }],
+      prs: [{ number: 9, title: "Dark mode" }],
+      project: [], notes: "",
+    },
+  };
+  const prompt = planPrompt(state, { round: 1 });
+  assert.match(prompt, /TRABAJO ABIERTO EXISTENTE/);
+  assert.match(prompt, /#5 Bug login/);
+  assert.match(prompt, /"number"/, "explica el campo number para adoptar");
+  assert.match(prompt, /NO crees|no recrees|NUNCA pongas/i);
+
+  const noInv = planPrompt({ repo: "org/repo", repo_path: "/repo", round: 1, tasks: [], inventory: null }, { round: 1 });
+  assert.doesNotMatch(noInv, /TRABAJO ABIERTO EXISTENTE/);
+});
+
+test("canvas and UI wire run_intake to the intake action and render inventory", async () => {
+  const ext = await readFile(join(extensionDir, "extension.mjs"), "utf8");
+  assert.match(ext, /name: "run_intake"/);
+  assert.match(ext, /applyAction\(repoFrom\(input\), "intake"\)/);
+
+  // Arquitectura cliente fino (#40): el dispatch de "intake" vive en service.mjs.
+  const service = await readFile(join(extensionDir, "runner", "lib", "service.mjs"), "utf8");
+  assert.match(service, /actionName === "intake"[\s\S]{0,240}intakeRunnerArgs/);
+
+  const app = await readFile(join(extensionDir, "app.mjs"), "utf8");
+  assert.match(app, /intakeBtn[\s\S]{0,120}action\("run_intake"/);
+
+  const doc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "inventory"]);
+  renderState({
+    status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [],
+    inventory: { issues: [{ number: 5, title: "Bug login" }], prs: [], project: [], notes: "" },
+  }, doc);
+  const head = doc.getElementById("inventory").children[0];
+  assert.match(head.textContent, /Issues abiertas: 1/);
+  assert.equal(doc.getElementById("inventory").children[1].textContent, "#5 Bug login");
+
+  // doc sin contenedor #inventory no debe romperse
+  const minimal = new FakeDocument(["status", "round", "pipeline", "tasks", "issues"]);
+  renderState({ status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [], inventory: { issues: [{ number: 1, title: "x" }] } }, minimal);
+  // inventory null muestra el vacío
+  const emptyDoc = new FakeDocument(["status", "round", "pipeline", "tasks", "issues", "inventory"]);
+  renderState({ status: "running", round: 1, max_rounds: 3, phase: "discover", tasks: [], issues: [], inventory: null }, emptyDoc);
+  });

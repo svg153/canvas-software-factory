@@ -1,0 +1,61 @@
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+export const DEFAULT_SERVER = path.resolve(here, "..", "com.github.copilot", "extensions", "software-factory", "runner", "server.mjs");
+
+export function buildSidecarArgs({ server = DEFAULT_SERVER, repo, port, allowRepo = repo }) {
+  if (!repo) throw new Error("repo is required");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("valid port is required");
+  return [server, "--repo", repo, "--port", String(port), "--allow-repo", allowRepo];
+}
+
+export function sidecarUrl(port) {
+  return `http://127.0.0.1:${port}/`;
+}
+
+// Standalone runner/server.mjs must exist at DEFAULT_SERVER; otherwise spawning fails with a clear error.
+export function startSidecar({ node = process.execPath, server = DEFAULT_SERVER, ...opts }) {
+  if (!existsSync(server)) {
+    throw new Error(`sidecar entrypoint not found: ${server} (standalone runner/server.mjs is required)`);
+  }
+  const child = spawn(node, buildSidecarArgs({ server, ...opts }), { stdio: "inherit" });
+  return { child, url: sidecarUrl(opts.port), stop: () => child.kill() };
+}
+
+export const DEFAULT_PORT = 4317;
+
+// Returns the value following `flag`, or undefined when absent or valueless.
+export function getFlag(argv, flag) {
+  const i = argv.indexOf(flag);
+  if (i === -1) return undefined;
+  const v = argv[i + 1];
+  return v === undefined || v.startsWith("--") ? undefined : v;
+}
+
+// Puerto 0 (efimero) rechazado a proposito: el sidecar debe escuchar en un puerto
+// conocido por la app anfitriona (--port/SF_PORT); un efimero romperia la reconexion
+// y el health-check del host. server.mjs standalone si acepta 0 porque imprime la URL real.
+export function parseCliArgs(argv, env = {}) {
+  const rawPort = getFlag(argv, "--port") ?? env.SF_PORT;
+  let port = DEFAULT_PORT;
+  if (rawPort !== undefined) {
+    port = Number(rawPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`invalid port: ${JSON.stringify(rawPort)} (expected an integer between 1 and 65535)`);
+    }
+  }
+  return { repo: getFlag(argv, "--repo") ?? env.SF_REPO, port };
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const { child } = startSidecar(parseCliArgs(process.argv.slice(2), process.env));
+    process.on("SIGINT", () => child.kill());
+  } catch (err) {
+    console.error(`sidecar: ${err.message}`);
+    process.exit(1);
+  }
+}

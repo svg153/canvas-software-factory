@@ -5,13 +5,15 @@ import { resolve } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
-  loadState, saveState, defaultState, logEvent, paths,
-  newTask, writeWorkOrder, openTasks, failedTasks, unclaimedIssues, hasResult, PHASES,
+  loadState, saveState, defaultState, logEvent, paths, nowIso,
+  newTask, writeWorkOrder, openTasks, failedTasks, hasResult, PHASES,
+  HARNESSES,
 } from "./lib/state.mjs";
 import {
-  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt,
+  discoverPrompt, planPrompt, grillPrompt, implementPrompt, reviewPrompt, flattenIssueText,
 } from "./lib/prompts.mjs";
-import { createIssuesFromDraft, validateInitInputs } from "./lib/gh.mjs";
+import { createIssuesFromDraft, readRepoInventory, validateInitInputs } from "./lib/gh.mjs";
+import { claimableIssues, blockedIssues } from "./lib/graph.mjs";
 import { startGuardError } from "./lib/actions.mjs";
 
 const [, , cmd, repoArg = ".", ...rest] = process.argv;
@@ -41,9 +43,20 @@ const phasePlan = {
   plan: (s) => [{ title: `Plan GSD round ${s.round}`, prompt: planPrompt }],
   grill: (s) => [{ title: `Grill-me al plan round ${s.round}`, prompt: grillPrompt }],
   implement: (s) => {
-    return unclaimedIssues(s)
+    // Wave gating: solo se emiten work orders de issues reclamables ahora mismo
+    // (sin tarea viva y con todas sus dependencias implementadas). El resto se
+    // libera en olas posteriores a medida que completan sus dependencias.
+    // Las ya emitidas en ESTE round quedan fuera: una tarea failed no se
+    // re-clama dentro del mismo round (se conserva el historial de fallos).
+    const inRound = new Set(
+      s.tasks
+        .filter((t) => t.phase === "implement" && t.round === s.round)
+        .map((t) => Number(t.issue?.number ?? t.meta?.issue?.number)),
+    );
+    return claimableIssues(s)
+      .filter((i) => !inRound.has(Number(i.number)))
       .map((i) => ({
-        title: `Implementar #${i.number} ${i.title}`,
+        title: `Implementar #${i.number} ${flattenIssueText(i.title)}`,
         prompt: (st, t) => implementPrompt(st, t, i),
         meta: { issue: i },
       }));
@@ -98,15 +111,86 @@ async function cmdInit() {
     for (const m of inputErrors) console.error(m);
     process.exit(1);
   }
-  const state = defaultState(repoPath, { repo, project, projectOwner, rounds });
+  const harness = flags("harness") || "";
+  const model = flags("model") || "";
+  if (harness && !HARNESSES.includes(harness)) {
+    console.error(`--harness "${harness}" no es válido. Valores permitidos: ${HARNESSES.join(", ")}.`);
+    process.exit(1);
+  }
+  const state = defaultState(repoPath, { repo, project, projectOwner, rounds, harness, model });
   await saveState(repoPath, state);
   await logEvent(repoPath, `init repo=${repo} project=${project} rounds=${rounds}`);
   console.log(JSON.stringify({ ok: true, sf: paths(repoPath).root, state: "idle" }, null, 2));
 }
 
+// Idea del usuario ("vocal idea"): se guarda como semilla y la próxima fase plan la
+// descompone en 1+ issues del draft (origin:user). No lanza un round por sí sola:
+// viaja encajada en los rounds existentes.
+async function cmdIdea() {
+  const state = need(await loadState(repoPath));
+  const text = (rest[0] || "").trim();
+  if (!text) {
+    console.error('Idea vacía. Uso: node sf.mjs idea <repo> "texto de la idea"');
+    process.exit(1);
+  }
+  state.seeds = state.seeds || [];
+  const seed = {
+    id: `seed${state.seeds.length + 1}`,
+    text,
+    origin: "user",
+    round_added: state.round,
+    status: "new", // new -> planned (sale de plan) -> triaged (sale de grill)
+    created_at: nowIso(),
+  };
+  state.seeds.push(seed);
+  await logEvent(repoPath, `idea seed ${seed.id} (round ${state.round}): ${text.slice(0, 80)}`);
+  await saveState(repoPath, state);
+  console.log(JSON.stringify(
+    { ok: true, seed, note: "la próxima fase plan la materializará en 1 o más issues" },
+    null, 2,
+  ));
+}
+
+async function cmdIntake() {
+  const state = need(await loadState(repoPath));
+  // Snapshot mecánico del trabajo ya abierto (issues/PRs/Project). readRepoInventory
+  // degrada cada fuente que falla a [] con nota; solo lanza si el repo no es owner/name.
+  let inventory;
+  try {
+    inventory = await readRepoInventory(state);
+  } catch (e) {
+    inventory = {
+      fetched_at: nowIso(), issues: [], prs: [], project: [],
+      notes: `ingesta fallida: ${e.message}`,
+    };
+  }
+  state.inventory = inventory;
+  state.updated_at = nowIso();
+  await logEvent(
+    repoPath,
+    `intake: ${inventory.issues.length} issues abiertas, ${inventory.prs.length} PRs abiertas, ` +
+      `${inventory.project.length} items de Project`,
+  );
+  await saveState(repoPath, state);
+  console.log(JSON.stringify(
+    {
+      ok: true,
+      inventory: {
+        issues: inventory.issues.length,
+        prs: inventory.prs.length,
+        project: inventory.project.length,
+        notes: (inventory.notes || "").trim(),
+      },
+      note: "discover/plan (round 1) usarán el inventario; adopta issues abiertas poniendo su number en el draft",
+    },
+    null, 2,
+  ));
+}
+
 async function cmdStatus() {
   const state = need(await loadState(repoPath));
   const summary = {
+    harness: state.harness || "", model: state.model || "",
     status: state.status, round: state.round, max_rounds: state.max_rounds,
     phase: state.phase, phase_index: `${PHASES.indexOf(state.phase) + 1}/${PHASES.length}`,
     tasks_open: openTasks(state).length, tasks_done: state.tasks.filter((t) => t.status === "done").length,
@@ -122,10 +206,14 @@ async function cmdStatus() {
 // guarda state.json, no se escriben work orders, no se toca events.log ni gh.
 async function cmdNext() {
   const state0 = need(await loadState(repoPath));
+  const pp = flags("print-prompt");
+  const printPrompt = pp !== undefined;
+  const wantedId = flags("task") !== undefined && flags("task") !== true ? flags("task") : (typeof pp === "string" ? pp : null);
   if (state0.status !== "running") {
     const hint = state0.status === "done"
       ? "Fábrica terminada. Ejecuta init <repo> --repo owner/repo para una nueva ejecución."
       : "Ejecuta: node sf.mjs start <repo>";
+    if (printPrompt) { console.error(`status=${state0.status}. ${hint}`); process.exitCode = 3; return; }
     console.log(JSON.stringify({ status: state0.status, round: state0.round, phase: state0.phase, tasks: [], hint }, null, 2));
     return;
   }
@@ -135,27 +223,64 @@ async function cmdNext() {
   const log = (msg) => (dry ? Promise.resolve() : logEvent(repoPath, msg));
   // Si la fase no tiene tareas: si ya tuvo y están done, avanza; si no tuvo, se generan.
   const hasPhaseTasks = () => state.tasks.some((t) => t.phase === state.phase && t.round === state.round);
+  const noteBlocked = async () => {
+    if (state.phase !== "implement") return;
+    const blocked = blockedIssues(state);
+    if (!blocked.length) return;
+    state.notes = (state.notes || "") +
+      `\nround ${state.round} implement: ${blocked.length} issue(s) bloqueada(s) por dependencias: ` +
+      blocked.map((b) => `#${b.number}←[${(b.depends_on || []).join(",")}]`).join(" ");
+    await log(`implement round ${state.round}: bloqueadas ${blocked.map((b) => `#${b.number}`).join(",")}`);
+  };
   let advancePreview = null;
   if (openTasks(state).length === 0) {
-    if (hasPhaseTasks()) {
-      // Tareas fallidas no se re-claman, pero el avance no puede ser silencioso.
-      const failed = failedTasks(state);
-      if (failed.length) {
-        state.notes = (state.notes || "") +
-          `\nround ${state.round} ${state.phase}: ${failed.length} tarea(s) fallida(s): ${failed.map((f) => f.id).join(", ")}`;
-        await log(`fase ${state.phase} (round ${state.round}) avanza con fallidas: ${failed.map((f) => f.id).join(", ")}`);
-      }
-      advancePreview = await advance(state, { dryRun: dry });
-    }
-    // advance puede terminar la fábrica (status=done): entonces no se emite nada más.
-    if (state.status === "running" && openTasks(state).length === 0 && !hasPhaseTasks()) {
+    // En implement, antes de avanzar: si hay issues newly reclamables (ola
+    // desbloqueada al completarse una dependencia), se emiten y NO se avanza.
+    if (state.phase === "implement" && claimableIssues(state).length > 0) {
       const n = await emitTasks(state, { dryRun: dry });
-      if (n === 0) advancePreview = await advance(state, { dryRun: dry }); // fases mecánicas o sin contenido (issues, implement sin issues)
+      if (n > 0) await log(`implement round ${state.round}: emitidas ${n} tarea(s) de olas desbloqueadas`);
+    }
+    if (state.status === "running" && openTasks(state).length === 0) {
+      if (hasPhaseTasks()) {
+        // Tareas fallidas no se re-claman, pero el avance no puede ser silencioso.
+        const failed = failedTasks(state);
+        if (failed.length) {
+          state.notes = (state.notes || "") +
+            `\nround ${state.round} ${state.phase}: ${failed.length} tarea(s) fallida(s): ${failed.map((f) => f.id).join(", ")}`;
+          await log(`fase ${state.phase} (round ${state.round}) avanza con fallidas: ${failed.map((f) => f.id).join(", ")}`);
+        }
+        await noteBlocked();
+        advancePreview = await advance(state, { dryRun: dry });
+      }
+      // advance puede terminar la fábrica (status=done): entonces no se emite nada más.
+      if (state.status === "running" && openTasks(state).length === 0 && !hasPhaseTasks()) {
+        const n = await emitTasks(state, { dryRun: dry });
+        if (n === 0) {
+          await noteBlocked(); // fases mecánicas o sin contenido (issues, implement sin reclamables)
+          advancePreview = await advance(state, { dryRun: dry });
+        }
+      }
     }
   }
   const open = openTasks(state);
   const failedNow = failedTasks(state).map((f) => ({ id: f.id, title: f.title }));
   const base = { dry_run: dry, ...(advancePreview ? { advance: advancePreview } : {}) };
+  if (state.phase === "implement" && state.status === "running") {
+    const blockedNow = blockedIssues(state).map((b) => ({
+      number: b.number, title: b.title, wave: b.wave ?? 0, depends_on: b.depends_on || [],
+    }));
+    if (blockedNow.length) base.blocked = blockedNow;
+  }
+  if (printPrompt) {
+    const t = wantedId ? open.find((x) => x.id === wantedId) : open[0];
+    if (!t) { console.error(wantedId ? `Tarea abierta no encontrada: ${wantedId}` : `Sin tareas abiertas (fase ${state.phase}).`); process.exitCode = 3; return; }
+    let prompt = t.prompt_preview ?? null;
+    if (prompt === null) { try { prompt = await readFile(t.prompt_file, "utf8"); } catch { /* pending */ } }
+    if (prompt === null) { console.error(`Sin prompt disponible para ${t.id}`); process.exitCode = 3; return; }
+    await persist();
+    process.stdout.write(prompt);
+    return;
+  }
   if (open.length === 0) {
     console.log(JSON.stringify({ status: state.status, phase: state.phase, tasks: [], failed: failedNow, ...base }, null, 2));
     return;
@@ -210,6 +335,21 @@ async function advance(state, { dryRun = isDryRun() } = {}) {
       await saveState(work.repo_path, work);
     }
     return preview;
+  }
+  // Semillas de usuario: al salir de plan, las "new" que ya existían cuando se emitió
+  // el work order de plan pasan a "planned" (una idea añadida a mitad de round no se
+  // marca como consumida: espera a la próxima fase plan). Al salir de grill, "planned"
+  // -> "triaged" (ya superó la autocrítica). La deduplicación por título en la fase
+  // issues evita duplicados si una idea llegara a re-planificarse.
+  if (work.phase === "plan") {
+    const planTask = (work.tasks || []).find((t) => t.phase === "plan" && t.round === work.round);
+    const cutoff = planTask?.created_at;
+    for (const s of work.seeds || []) {
+      if (s.status === "new" && (!cutoff || s.created_at <= cutoff)) s.status = "planned";
+    }
+  }
+  if (work.phase === "grill") {
+    for (const s of work.seeds || []) if (s.status === "planned") s.status = "triaged";
   }
   const idx = PHASES.indexOf(work.phase);
   work.phase = PHASES[idx + 1] || PHASES[0];
@@ -290,7 +430,15 @@ async function main() {
     process.exit(2);
   }
   switch (cmd) {
+    case "serve": {
+      const { startStandalone } = await import("./server.mjs");
+      const { url, repo } = await startStandalone(["--repo", repoPath, ...rest]);
+      console.log(`Software Factory panel: ${url}/ (repo ${repo})`);
+      return;
+    }
     case "init": return cmdInit();
+    case "idea": return cmdIdea();
+    case "intake": return cmdIntake();
     case "status": return cmdStatus();
     case "next": return cmdNext();
     case "complete": return cmdComplete();
@@ -306,9 +454,18 @@ async function main() {
     default:
       console.log(`sf.mjs — Software Factory runner
 Comandos:
-  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--force]
+  init <repo> --repo owner/repo [--project NNN] [--project-owner owner] [--rounds 3] [--harness copilot|claude|codex|opencode|gemini|vscode] [--model id] [--force]
       (sin --force no toca un estado existente; reiniciar es decision explicita)
+  idea <repo> "texto"  (guarda una idea del usuario como semilla; la proxima fase plan
+      la descompone en 1+ issues origin:user que pasan por grill/issues/implement igual
+      que las de la auditoria; no lanza un round propio)
+  intake <repo>  (leer con gh el trabajo YA abierto del repo: issues abiertas, PRs abiertas
+      e items del Project; lo guarda en state.inventory. Es de SOLO LECTURA y resiliente
+      (una fuente que falla se degrada a [] con nota). discover/plan (round 1) lo usan para
+      continuar un repo "a medias" y NO recrear issues existentes; para adoptar una issue
+      abierta ya creada, pon su number real en el draft y issues la registra sin crear otra)
   start|pause|status|next <repo>
+  serve <repo> [--port N] [--allow-repo <ruta>]  (panel web standalone, alias de runner/server.mjs)
   complete <repo> <taskId> [--fail|--force]
       (done exige informe no vacio en result_file; --force es la alternativa explicita)
   issues <repo> [--dry|--dry-run]  (crea issues del draft + añade al Project; la simulacion

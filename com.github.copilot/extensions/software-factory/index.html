@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="sf-action-token" content="__SF_ACTION_TOKEN__" />
 <title>Software Factory</title>
 <style>
   /* Tokens: variables del host con fallback; paleta completa por esquema de color.
@@ -78,7 +77,7 @@
   #repopath { color:var(--mut); font-size:12px; margin:0 0 6px; overflow-wrap:anywhere; }
   .preflight { color:var(--mut); font-size:12px; margin:0 0 14px; }
   .preflight::before { content:"▸ "; color:var(--run); }
-  .card { margin:0 0 16px; }
+  .startcard { margin:0 0 16px; }
   .step { padding:12px 0 4px; }
   .step:first-of-type { padding-top:2px; }
   .step + .step { border-top:1px solid var(--line); }
@@ -94,6 +93,7 @@
   .row .field { display:flex; align-items:center; gap:8px; flex:0 1 160px; }
   .row .field > label { color:var(--mut); font-size:12px; white-space:nowrap; }
   .row .field input { flex:1 1 64px; min-width:56px; max-width:80px; }
+  .row .field input[type="checkbox"] { flex:0 0 auto; width:16px; min-height:0; max-width:none; accent-color:var(--run); }
   .row .btn { min-height:44px; flex:0 0 auto; }
   .pipeline { display:flex; gap:10px; margin:14px 0 16px; flex-wrap:wrap; }
   .phase {
@@ -131,6 +131,34 @@
   .issue:last-child { border-bottom:0; }
   .issue a, .issue span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .empty { color:var(--mut); font-style:italic; padding:10px 8px; text-align:center; }
+  /* Pestañas Pipeline / Tablero / Grafo / Orden */
+  .tabs { display:flex; gap:6px; margin:0 0 14px; flex-wrap:wrap; }
+  .tab { border:1px solid var(--line); background:var(--card); color:var(--mut); padding:6px 16px; border-radius:8px 8px 0 0; cursor:pointer; font-weight:600; font-size:13px; min-height:36px; }
+  .tab.active { color:var(--txt); border-color:var(--run); background:rgba(88,166,255,.12); background:color-mix(in srgb, var(--run) 12%, var(--card)); }
+  .board { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:10px; align-items:start; overflow-x:auto; }
+  @media (max-width:1100px){ .board{grid-template-columns:repeat(3,1fr);} }
+  @media (max-width:700px){ .board{grid-template-columns:1fr;} }
+  .col { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px; min-height:90px; }
+  .col h3 { font-size:12px; color:var(--mut); margin-bottom:8px; text-transform:uppercase; letter-spacing:.04em; }
+  .col-done h3 { color:var(--acc); } .col-in_progress h3 { color:var(--run); } .col-backlog h3 { color:var(--bad); }
+  .board .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:13px; }
+  .board .card a { display:block; }
+  .chip { display:inline-block; margin-left:6px; padding:1px 7px; border:1px solid var(--line); border-radius:999px; color:var(--mut); font-size:11px; }
+  .ghcols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:900px){ .ghcols{grid-template-columns:1fr;} }
+  .ghcols h3 { font-size:12px; color:var(--mut); margin:0 0 6px; font-weight:600; }
+  .ghlist { max-height:220px; overflow:auto; }
+  .graphwrap { overflow:auto; max-height:520px; border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:8px; }
+  .dag { display:block; }
+  .dagEdge { fill:none; stroke:var(--mut); stroke-width:1.5; }
+  .dagNode rect { fill:var(--card); stroke:var(--run); stroke-width:1; }
+  .dagNode.wave1 rect { stroke:var(--acc); } .dagNode.wave2 rect { stroke:var(--warn); } .dagNode.wave3 rect { stroke:#bc8cff; }
+  .dagNum { fill:var(--mut); font-size:10px; font-family:var(--mono); }
+  .dagTitle { fill:var(--txt); font-size:12px; }
+  .waveBlock { margin-bottom:14px; }
+  .waveBlock h3 { font-size:12px; color:var(--run); margin-bottom:6px; }
+  .waveBlock ol { margin-left:18px; }
+  .panel .btn.mini { padding:4px 12px; font-size:12px; min-height:0; float:right; margin-left:8px; }
   #log {
     font:12px/1.5 var(--mono); max-height:180px; overflow:auto; margin-top:14px;
     border:1px solid var(--line); border-radius:10px; padding:6px 10px; background:var(--bg);
@@ -178,7 +206,7 @@
 <p id="repopath" title="Directorio que gestiona este panel"></p>
 <p class="preflight" id="preFlight">Asigna la carpeta del workspace para habilitar el arranque de la fábrica.</p>
 
-<section class="panel card" id="startCard" aria-label="Arranque de la fábrica">
+<section class="panel startcard" id="startCard" aria-label="Arranque de la fábrica">
   <h2>Arrancar la fábrica</h2>
   <div class="step">
     <label for="repoInput">Carpeta local del workspace</label>
@@ -192,15 +220,25 @@
     <label for="ghrepo">Repositorio GitHub — destino de issues y PRs</label>
     <div class="row">
       <input id="ghrepo" type="text" placeholder="owner/repo" aria-label="Repositorio en GitHub" title="Repositorio en GitHub, formato owner/name (ej. svg153/canvas-software-factory)" />
-      <input id="project" type="text" placeholder="Project nº (opc.)" aria-label="Número de GitHub Project" title="NÚMERO del GitHub Project (no su nombre). Vacío = sin Project." />
+      <button class="btn" id="detectBtn" title="Detectar owner/repo desde git remote origin y el Project vinculado al repo (gh api)">Detectar</button>
+      <input id="project" type="text" placeholder="Project board ID (opc.)" aria-label="Número de GitHub Project" title="NÚMERO del GitHub Project (no su nombre). Vacío = sin Project. Usa «Detectar» para rellenarlo desde el repo." />
       <input id="projectOwner" type="text" placeholder="Project owner (opc.)" aria-label="Owner del GitHub Project" title="Usuario u organización dueña del Project. Por defecto: el owner del repo." />
       <span class="field"><label for="rounds">Rounds</label><input id="rounds" type="number" min="1" max="10" step="1" value="3" aria-label="Número de rounds (1 a 10)" title="Rounds del bucle: entero de 1 a 10" /></span>
+      <span class="field"><label for="forceInit" title="Sobrescribe el estado existente de .software-factory al hacer Init: perderás el progreso (tareas, issues, fase actual).">Forzar reinicio</label><input type="checkbox" id="forceInit" /></span>
       <button class="btn" id="initBtn" aria-label="Guardar configuración de la fábrica">Guardar configuración</button>
     </div>
     <p class="hint">Cuando esté todo listo, pulsa «Arrancar» en la cabecera. Puedes pausar en cualquier momento.</p>
   </div>
 </section>
 
+<div class="tabs" id="tabs" role="tablist" aria-label="Vistas de la fábrica">
+  <button class="tab active" data-tab="pipeline" type="button">Pipeline</button>
+  <button class="tab" data-tab="board" type="button">Tablero</button>
+  <button class="tab" data-tab="graph" type="button">Grafo</button>
+  <button class="tab" data-tab="order" type="button">Orden de merge</button>
+</div>
+
+<section id="tab-pipeline">
 <div class="pipeline" id="pipeline" aria-label="Fases de la fábrica"></div>
 
 <div class="grid">
@@ -212,6 +250,66 @@
     <h2>Issues creadas</h2>
     <div id="issues"><div class="empty">Ninguna todavía.</div></div>
   </div>
+</div>
+</section>
+
+<section id="tab-board" hidden>
+  <div class="panel" role="region" aria-label="Tablero kanban">
+    <h2>Tablero kanban (derivado del estado)
+      <button class="btn mini" id="syncBoardBtn" title="Empuja el estado de cada issue (Backlog/Todo/In Progress/In Review/Done) al campo Status del Project.">Sincronizar board</button>
+      <button class="btn mini" id="createBoardBtn" title="Crea un GitHub Project (tablero kanban) para este repo si no hay ninguno vinculado, y lo enlaza.">Crear board GitHub</button>
+    </h2>
+    <div class="board" id="board"><div class="empty">Sin issues todavía.</div></div>
+  </div>
+</section>
+
+<section id="tab-graph" hidden>
+  <div class="panel" role="region" aria-label="Grafo de dependencias">
+    <h2>Grafo de dependencias — de arriba (ola 0) a abajo (última ola)</h2>
+    <div class="graphwrap" id="graph"><div class="empty">Sin issues todavía.</div></div>
+  </div>
+</section>
+
+<section id="tab-order" hidden>
+  <div class="panel" role="region" aria-label="Orden de merge">
+    <h2>Orden de implementación / merge</h2>
+    <div id="order"><div class="empty">Sin issues todavía.</div></div>
+  </div>
+</section>
+
+<div class="panel" style="margin-top:16px" role="region" aria-label="Ideas del usuario">
+  <h2>💡 Idea del usuario</h2>
+  <div class="row">
+    <input id="ideaText" type="text" placeholder="Describe tu idea: la próxima fase plan la convertirá en issues que siguen el mismo flujo (grill → issues → Project → implement → review)" aria-label="Texto de la idea" />
+    <button class="btn" id="ideaBtn">Añadir idea</button>
+  </div>
+  <div id="seeds" style="margin-top:10px"><div class="empty">Ninguna idea todavía.</div></div>
+</div>
+
+<div class="panel" style="margin-top:16px" role="region" aria-label="Trabajo existente en GitHub">
+  <h2>GitHub — trabajo existente
+    <button class="btn mini" id="importBtn" title="Vincula las issues abiertas al run para que la fase «issues» no las duplique. Escribe en state.json.">Importar abiertas</button>
+    <button class="btn mini" id="ghBtn" title="Lee issues y PRs abiertos del repo en GitHub (gh issue/pr list). Solo lectura.">Actualizar GitHub</button>
+  </h2>
+  <div class="ghcols">
+    <div>
+      <h3>Issues abiertas</h3>
+      <div id="ghIssues" class="ghlist"><div class="empty">Pulsa «Actualizar GitHub» para verlas.</div></div>
+    </div>
+    <div>
+      <h3>PRs abiertos</h3>
+      <div id="ghPulls" class="ghlist"><div class="empty">Pulsa «Actualizar GitHub» para verlos.</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:16px" role="region" aria-label="Ingesta del repo">
+  <h2>📥 Ingesta del repo (continuar un repo a medias)</h2>
+  <div class="row">
+    <button class="btn" id="intakeBtn">Ingestar repo</button>
+    <span class="empty">Lee con gh issues/PRs abiertas y items del Project; discover/plan los usan para avanzar lo abierto y no recrear issues.</span>
+  </div>
+  <div id="inventory" style="margin-top:10px"><div class="empty">Sin ingesta todavía.</div></div>
 </div>
 
 <div id="actionError" role="alert" hidden></div>
