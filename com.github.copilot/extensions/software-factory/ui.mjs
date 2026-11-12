@@ -144,6 +144,20 @@ function issueHref(value) {
   }
 }
 
+// Filtro global (#tabFilter): Tablero, Grafo y Orden lo leen al renderizar.
+// Acepta número (con o sin «#») o texto del título. Vacío = sin filtro.
+function filterQuery(doc) {
+  const el = doc.getElementById("tabFilter");
+  const raw = String(el?.value ?? "").trim().toLowerCase().replace(/^#/, "");
+  return raw || null;
+}
+
+function issueMatches(issue, q) {
+  if (!q) return true;
+  return String(issue.number ?? "").includes(q)
+    || String(issue.title ?? "").toLowerCase().includes(q);
+}
+
 export function renderGithub(result, doc = document) {
   // Contenido no confiable (títulos de terceros): siempre textContent; enlaces solo https.
   const issueList = doc.getElementById("ghIssues");
@@ -252,6 +266,24 @@ export function renderState(state, doc = document, closedNumbers = null) {
       : "—";
     element.appendChild(count);
     pipeline.appendChild(element);
+  }
+
+  // Barra de progreso de la fase actual: done/total de tareas del phase state.phase.
+  const progress = doc.getElementById("roundProgress");
+  if (progress) {
+    const phaseTasks = tasks.filter((task) => task.phase === state?.phase);
+    if (state && phaseTasks.length) {
+      const done = phaseTasks.filter((task) => task.status === "done").length;
+      const pct = Math.round((done / phaseTasks.length) * 100);
+      progress.hidden = false;
+      progress.setAttribute?.("aria-valuenow", String(pct));
+      const fill = doc.getElementById("roundProgressFill");
+      if (fill?.style) fill.style.width = `${pct}%`;
+      const text = doc.getElementById("roundProgressText");
+      if (text) text.textContent = `${done}/${phaseTasks.length} tareas de la fase ${state.phase}`;
+    } else {
+      progress.hidden = true;
+    }
   }
 
   const taskList = doc.getElementById("tasks");
@@ -387,15 +419,17 @@ export function renderState(state, doc = document, closedNumbers = null) {
 function renderBoardView(state, doc, closedNumbers) {
   const host = doc.getElementById("board");
   if (!host) return;
+  const q = filterQuery(doc);
   const board = deriveBoard(state || {}, closedNumbers);
   host.replaceChildren();
   for (const col of board.columns) {
     const section = doc.createElement("div");
     section.className = `col col-${col.key}`;
     const head = doc.createElement("h3");
-    head.textContent = `${col.label} (${col.cards.length})`;
+    const cards = q ? col.cards.filter((card) => issueMatches(card, q)) : col.cards;
+    head.textContent = `${col.label} (${cards.length})`;
     section.appendChild(head);
-    for (const card of col.cards) {
+    for (const card of cards) {
       const el = doc.createElement("div");
       el.className = "card";
       const href = issueHref(card.url);
@@ -417,7 +451,7 @@ function renderBoardView(state, doc, closedNumbers) {
       }
       section.appendChild(el);
     }
-    if (!col.cards.length) appendEmpty(section, "—", doc);
+    if (!cards.length) appendEmpty(section, "—", doc);
     host.appendChild(section);
   }
 }
@@ -439,6 +473,8 @@ function renderGraphView(state, doc) {
   svg.setAttribute("height", String(layout.height));
   svg.setAttribute("class", "dag");
   const byNumber = new Map(layout.nodes.map((n) => [n.number, n]));
+  const q = filterQuery(doc);
+  const matched = new Set(layout.nodes.filter((n) => issueMatches(n, q)).map((n) => n.number));
   for (const edge of layout.edges) {
     const a = byNumber.get(edge.from);
     const b = byNumber.get(edge.to);
@@ -447,12 +483,12 @@ function renderGraphView(state, doc) {
     const x2 = b.x + layout.nodeW / 2, y2 = b.y;
     const bend = Math.max(20, (y2 - y1) / 2);
     path.setAttribute("d", `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`);
-    path.setAttribute("class", "dagEdge");
+    path.setAttribute("class", `dagEdge${matched.has(edge.from) && matched.has(edge.to) ? "" : " dim"}`);
     svg.appendChild(path);
   }
   for (const node of layout.nodes) {
     const g = doc.createElementNS(SVG_NS, "g");
-    g.setAttribute("class", `dagNode wave${node.wave % 4}`);
+    g.setAttribute("class", `dagNode wave${node.wave % 4}${matched.has(node.number) ? "" : " dim"}`);
     g.setAttribute("transform", `translate(${node.x},${node.y})`);
     const rect = doc.createElementNS(SVG_NS, "rect");
     rect.setAttribute("width", String(layout.nodeW));
@@ -480,13 +516,19 @@ function renderOrderView(state, doc) {
   const host = doc.getElementById("order");
   if (!host) return;
   host.replaceChildren();
+  const q = filterQuery(doc);
   const issues = (state?.issues || []).filter((i) => Number.isFinite(Number(i.number)));
   if (!issues.length) {
     appendEmpty(host, "Sin issues todavía: el orden aparece tras la fase issues.", doc);
     return;
   }
+  const matched = q ? issues.filter((i) => issueMatches(i, q)) : issues;
+  if (!matched.length) {
+    appendEmpty(host, `Ningún issue coincide con «${q}».`, doc);
+    return;
+  }
   const byWave = new Map();
-  for (const i of issues) {
+  for (const i of matched) {
     const w = Number(i.wave ?? 0);
     if (!byWave.has(w)) byWave.set(w, []);
     byWave.get(w).push(i);

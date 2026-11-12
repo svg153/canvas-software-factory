@@ -131,8 +131,16 @@
   .issue:last-child { border-bottom:0; }
   .issue a, .issue span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .empty { color:var(--mut); font-style:italic; padding:10px 8px; text-align:center; }
-  /* Pestañas Pipeline / Tablero / Grafo / Orden */
-  .tabs { display:flex; gap:6px; margin:0 0 14px; flex-wrap:wrap; }
+  /* Pestañas Pipeline / Tablero / Grafo / Orden + filtro global */
+  .tabrow { display:flex; gap:10px; align-items:center; margin:0 0 14px; flex-wrap:wrap; }
+  .tabrow .tabs { margin:0; }
+  #tabFilter {
+    flex:0 1 240px; min-width:140px; min-height:36px;
+    background:var(--card); border:1px solid var(--line); color:var(--txt);
+    padding:6px 12px; border-radius:8px; font:13px var(--font);
+  }
+  #tabFilter::placeholder { color:var(--mut); }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; }
   .tab { border:1px solid var(--line); background:var(--card); color:var(--mut); padding:6px 16px; border-radius:8px 8px 0 0; cursor:pointer; font-weight:600; font-size:13px; min-height:36px; }
   .tab.active { color:var(--txt); border-color:var(--run); background:rgba(88,166,255,.12); background:color-mix(in srgb, var(--run) 12%, var(--card)); }
   .board { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:10px; align-items:start; overflow-x:auto; }
@@ -155,12 +163,33 @@
   .dagNode.wave1 rect { stroke:var(--acc); } .dagNode.wave2 rect { stroke:var(--warn); } .dagNode.wave3 rect { stroke:#bc8cff; }
   .dagNum { fill:var(--mut); font-size:10px; font-family:var(--mono); }
   .dagTitle { fill:var(--txt); font-size:12px; }
+  .dag .dim { opacity:.18; }
+  /* Barra de progreso de la fase actual */
+  .rprog {
+    position:relative; height:20px; margin:0 0 16px; overflow:hidden;
+    border:1px solid var(--line); border-radius:999px; background:var(--card);
+  }
+  .rprog-fill {
+    position:absolute; top:0; bottom:0; left:0; width:0%; border-radius:999px;
+    background:var(--run); opacity:.32;
+    background:color-mix(in srgb, var(--run) 32%, var(--card)); transition:width .3s;
+  }
+  .rprog-txt {
+    position:relative; display:block; text-align:center; line-height:18px;
+    font-size:11px; color:var(--mut); font-variant-numeric:tabular-nums;
+  }
   .waveBlock { margin-bottom:14px; }
   .waveBlock h3 { font-size:12px; color:var(--run); margin-bottom:6px; }
   .waveBlock ol { margin-left:18px; }
   .panel .btn.mini { padding:4px 12px; font-size:12px; min-height:0; float:right; margin-left:8px; }
+  .loghead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:16px 0 6px; }
+  .loghead h2 {
+    font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.08em;
+    font-weight:600; margin:0;
+  }
+  .loghead .btn.mini { padding:4px 12px; font-size:12px; min-height:0; }
   #log {
-    font:12px/1.5 var(--mono); max-height:180px; overflow:auto; margin-top:14px;
+    font:12px/1.5 var(--mono); max-height:180px; overflow:auto; margin-top:0;
     border:1px solid var(--line); border-radius:10px; padding:6px 10px; background:var(--bg);
   }
   #log .line {
@@ -178,7 +207,21 @@
     margin:12px 0 0; padding:10px 12px; border:1px solid var(--bad); border-radius:10px;
     background:rgba(248,81,73,.09); background:color-mix(in srgb, var(--bad) 9%, transparent);
     color:var(--bad); font-size:13px;
+    display:flex; gap:12px; align-items:baseline; justify-content:space-between;
   }
+  .errclose {
+    flex:none; background:none; border:1px solid var(--bad); color:var(--bad);
+    border-radius:6px; padding:1px 9px; font:600 12px var(--font); cursor:pointer;
+  }
+  /* Spinner de acción en curso dentro del propio botón (posicion absolute necesita relative) */
+  .btn { position:relative; }
+  .btn.busy { color:transparent !important; pointer-events:none; }
+  .btn.busy::after {
+    content:""; position:absolute; inset:0; margin:auto; width:14px; height:14px;
+    border-radius:50%; border:2px solid var(--line); border-top-color:var(--txt);
+    animation:spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
   @media (hover:none) and (pointer:coarse) { .btn { min-height:44px; } }
   @media (max-width:900px){
     .grid { grid-template-columns:1fr; }
@@ -199,8 +242,8 @@
   <span class="stat"><b id="sDone">0</b> hechas</span>
   <span class="stat"><b id="sFailed">0</b> fallidas</span>
   <span class="status" id="status" role="status" aria-live="polite">sin estado</span>
-  <button class="btn" id="configToggle" aria-controls="startCard" aria-expanded="true">Ajustes</button>
-  <button class="btn play" id="play" aria-label="Iniciar o reanudar la fábrica">▶ Arrancar</button>
+  <button class="btn" id="configToggle" aria-controls="startCard" aria-expanded="true" aria-keyshortcuts="Escape">Ajustes</button>
+  <button class="btn play" id="play" aria-label="Iniciar o reanudar la fábrica" aria-keyshortcuts="Control+Enter">▶ Arrancar</button>
   <button class="btn pause" id="pause" aria-label="Pausar la fábrica">⏸ Pausa</button>
 </header>
 <p id="repopath" title="Directorio que gestiona este panel"></p>
@@ -231,15 +274,23 @@
   </div>
 </section>
 
-<div class="tabs" id="tabs" role="tablist" aria-label="Vistas de la fábrica">
-  <button class="tab active" data-tab="pipeline" type="button">Pipeline</button>
-  <button class="tab" data-tab="board" type="button">Tablero</button>
-  <button class="tab" data-tab="graph" type="button">Grafo</button>
-  <button class="tab" data-tab="order" type="button">Orden de merge</button>
+<div class="tabrow">
+  <div class="tabs" id="tabs" role="tablist" aria-label="Vistas de la fábrica">
+    <button class="tab active" data-tab="pipeline" type="button" aria-keyshortcuts="1">Pipeline</button>
+    <button class="tab" data-tab="board" type="button" aria-keyshortcuts="2">Tablero</button>
+    <button class="tab" data-tab="graph" type="button" aria-keyshortcuts="3">Grafo</button>
+    <button class="tab" data-tab="order" type="button" aria-keyshortcuts="4">Orden de merge</button>
+  </div>
+  <input id="tabFilter" type="search" placeholder="Filtrar… (#n o texto)" aria-label="Filtrar tablero y grafo por número o texto" aria-controls="board graph order" title="Filtra las vistas Tablero, Grafo y Orden de merge" />
 </div>
 
 <section id="tab-pipeline">
 <div class="pipeline" id="pipeline" aria-label="Fases de la fábrica"></div>
+
+<div class="rprog" id="roundProgress" role="progressbar" aria-label="Progreso de tareas de la fase actual" aria-valuemin="0" aria-valuemax="100" hidden>
+  <div class="rprog-fill" id="roundProgressFill"></div>
+  <span class="rprog-txt" id="roundProgressText"></span>
+</div>
 
 <div class="grid">
   <div class="panel" role="region" aria-label="Tareas de la fase actual">
@@ -313,6 +364,11 @@
 </div>
 
 <div id="actionError" role="alert" hidden></div>
+
+<div class="loghead">
+  <h2 class="panel-title">Registro de actividad</h2>
+  <button class="btn mini" id="clearLogBtn" title="Vaciar el registro de actividad">Limpiar</button>
+</div>
 
 <div id="log" role="log" aria-label="Registro de actividad" aria-live="polite"></div>
 

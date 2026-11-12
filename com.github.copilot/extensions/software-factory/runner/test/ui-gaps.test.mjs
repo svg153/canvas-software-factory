@@ -21,6 +21,13 @@ class El {
     this.className = "";
     this._text = "";
     this.innerHTMLSet = false;
+    const cls = new Set();
+    this.classList = {
+      add: (c) => cls.add(c),
+      remove: (c) => cls.delete(c),
+      toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)),
+      contains: (c) => cls.has(c),
+    };
   }
   get textContent() { return this._text + this.children.map((c) => c.textContent).join(""); }
   set textContent(v) { this._text = String(v); this.children = []; }
@@ -113,6 +120,7 @@ test("renderState: marca fase activa y fases completadas", () => {
 
 async function runApp({ search = "", token = "tok", state = { status: "running", phase: "plan" }, fetchImpl } = {}) {
   const els = {};
+  const docHandlers = {};
   const mk = (id) => (els[id] ||= Object.assign(new El("div"), { value: "", onclick: null, scrollTop: 0, scrollHeight: 7 }));
   for (const id of ["status", "round", "pipeline", "tasks", "issues", "log", "play", "pause", "initBtn", "ghrepo", "project", "projectOwner", "rounds"]) mk(id);
   const calls = [];
@@ -125,6 +133,7 @@ async function runApp({ search = "", token = "tok", state = { status: "running",
       getElementById: (id) => mk(id),
       createElement: (t) => new El(t),
       querySelector: () => (token === null ? null : { content: token }),
+      addEventListener: (type, fn) => { docHandlers[type] = fn; },
     },
     location: { search },
     EventSource: FakeES,
@@ -138,7 +147,7 @@ async function runApp({ search = "", token = "tok", state = { status: "running",
     const uiUrl = pathToFileURL(join(extDir, "ui.mjs")).href;
     const src = read("app.mjs").replace('"/ui.mjs"', JSON.stringify(uiUrl)) + `\n//${Math.random()}`;
     await import(`data:text/javascript,${encodeURIComponent(src)}`);
-  return { els, calls, sources };
+  return { els, calls, sources, docHandlers };
 }
 
 test("app.mjs: carga /state, renderiza y se suscribe a /events con repo", async () => {
@@ -403,4 +412,133 @@ test("app.mjs: la línea pre-flight describe las consecuencias del arranque", as
   els.ghrepo.value = "o/r";
   els.ghrepo.oninput();
   assert.match(els.preFlight.textContent, /se crearán issues y PRs en o\/r, hasta 3 rounds/);
+});
+
+// --- #98 ronda 2: persistencia, atajos, filtro, progreso, log -----------------
+
+test("#98: atajos 1-4 cambian de pestaña y se ignoran mientras se teclea", async () => {
+  const { els, docHandlers } = await runApp({ search: "?repo=C%3A%5Cx" });
+  docHandlers.keydown({ key: "3", target: {} });
+  assert.equal(els["tab-graph"].hidden, false);
+  assert.equal(els["tab-pipeline"].hidden, true);
+  docHandlers.keydown({ key: "4", target: { tagName: "INPUT" } });
+  assert.equal(els["tab-order"].hidden, true);
+});
+
+test("#98: Ctrl+Enter lanza la acción y Esc colapsa los ajustes", async () => {
+  const { els, calls, docHandlers } = await runApp({ search: "?repo=C%3A%5Cx" });
+  docHandlers.keydown({ key: "Enter", ctrlKey: true, target: {} });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(calls.some((c) => c.url.startsWith("/action")));
+  docHandlers.keydown({ key: "Escape", target: {} });
+  assert.equal(els.startCard.hidden, true);
+  assert.equal(els.configToggle.textContent, "Ajustes");
+});
+
+test("#98: el botón de acción marca busy durante la petición", async () => {
+  const { els } = await runApp({ search: "?repo=C%3A%5Cx" });
+  const pending = els.play.onclick();
+  assert.ok(els.play.classList.contains("busy"));
+  await pending;
+  assert.ok(!els.play.classList.contains("busy"));
+});
+
+test("#98: el banner de error se cierra con su botón ✕", async () => {
+  const bad = await runApp({
+    search: "?repo=x",
+    fetchImpl: async (url) => ({
+      json: async () => (url === "/token"
+        ? { token: "tok" }
+        : url.startsWith("/action") ? { error: "boom", message: "allo" } : { status: "running", phase: "plan" }),
+    }),
+  });
+  await bad.els.play.onclick();
+  assert.equal(bad.els.actionError.hidden, false);
+  assert.match(bad.els.actionError.textContent, /boom|allo/);
+  const close = walk(bad.els.actionError).find((e) => e.className === "errclose");
+  assert.ok(close, "el banner debe incluir el botón ✕");
+  close.onclick();
+  assert.equal(bad.els.actionError.hidden, true);
+});
+
+test("#98: el registro estampa «ahora» y Limpiar lo vacía", async () => {
+  const down = await runApp({ fetchImpl: async () => { throw new Error("boom"); } });
+  const stamps = walk(down.els.log).filter((e) => e.className === "ts");
+  assert.ok(stamps.length, "debe haber líneas con marca de tiempo");
+  assert.equal(stamps[0].textContent, "ahora");
+  down.els.clearLogBtn.onclick();
+  assert.equal(down.els.log.children.length, 0);
+});
+
+test("#98: config y pestaña se persisten y se restauran con localStorage", async () => {
+  const data = new Map();
+  Object.defineProperty(globalThis, "localStorage", {
+    value: { getItem: (k) => (data.has(k) ? data.get(k) : null), setItem: (k, v) => data.set(k, String(v)) },
+    configurable: true, writable: true,
+  });
+  try {
+    const first = await runApp({ search: "?repo=C%3A%5Cx" });
+    first.els.repoInput.value = "C:\\x";
+    first.els.ghrepo.value = "o/r";
+    first.els.ghrepo.oninput();
+    first.docHandlers.keydown({ key: "2", target: {} });
+    assert.equal(data.get("sf.ghrepo"), "o/r");
+    assert.equal(data.get("sf.tab"), "board");
+    const second = await runApp({});
+    assert.equal(second.els.ghrepo.value, "o/r");
+    assert.equal(second.els["tab-board"].hidden, false);
+    assert.equal(second.els["tab-pipeline"].hidden, true);
+  } finally {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+test("#98: el filtro deja solo los issues coincidentes en Tablero y Orden", () => {
+  const doc = fakeDoc();
+  doc.getElementById("tabFilter").value = "2";
+  renderState({
+    status: "running", phase: "issues", tasks: [],
+    issues: [
+      { number: 2, title: "Alfa", url: "https://github.com/o/r/issues/2" },
+      { number: 3, title: "Beta", url: "https://github.com/o/r/issues/3" },
+    ],
+  }, doc);
+  assert.match(doc.els.board.textContent, /#2 Alfa/);
+  assert.doesNotMatch(doc.els.board.textContent, /#3/);
+  assert.match(doc.els.order.textContent, /#2 Alfa/);
+  assert.doesNotMatch(doc.els.order.textContent, /#3/);
+});
+
+test("#98: el filtro atenúa nodos y aristas no coincidentes en el grafo", () => {
+  const doc = fakeDoc();
+  doc.createElementNS = (_ns, tag) => Object.assign(new El(tag), {
+    attrs: {},
+    setAttribute(k, v) { this.attrs[k] = v; },
+  });
+  doc.getElementById("tabFilter").value = "#2";
+  renderState({
+    issues: [
+      { number: 2, title: "Alfa", wave: 0 },
+      { number: 3, title: "Beta", wave: 1, depends_on: [2] },
+    ],
+  }, doc);
+  const svg = doc.els.graph.children.find((c) => c.tag === "svg");
+  const nodes = svg.children.filter((c) => c.tag === "g");
+  const edge = svg.children.find((c) => c.tag === "path");
+  assert.ok(!nodes[0].attrs.class.includes("dim"), "#2 coincide: sin atenuar");
+  assert.ok(nodes[1].attrs.class.includes("dim"), "#3 no coincide: atenuado");
+  assert.ok(edge.attrs.class.includes("dim"), "arista hacia nodo atenuado: arista atenuada");
+});
+
+test("#98: la barra de progreso cuenta las tareas de la fase actual", () => {
+  const doc = fakeDoc();
+  renderState({
+    status: "running", phase: "implement",
+    tasks: [
+      { id: "a", phase: "implement", status: "done" },
+      { id: "b", phase: "implement", status: "pending" },
+    ],
+  }, doc);
+  assert.equal(doc.els.roundProgress.hidden, false);
+  assert.match(doc.els.roundProgressText.textContent, /1\/2 tareas de la fase implement/);
 });

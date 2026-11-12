@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+- Ronda 2 de mejoras UI/UX del canvas (#98): persistencia en `localStorage` de la
+  configuración, la pestaña activa y el estado de la tarjeta de arranque (se restauran al
+  abrir y la carpeta guardada se aplica sola); sincronización de la pestaña con el hash de
+  la URL (`#tab=board`); atajos globales `1-4` (pestañas), `Ctrl+Enter` (aplicar/arrancar)
+  y `Esc` (plegar ajustes); filtro único en la barra de pestañas que recorta Tablero y
+  Orden y atenúa el Grafo; barra de progreso de tareas de la fase actual sobre el pipeline;
+  marcas de tiempo relativas («hace 2 min») en el registro con botón «Limpiar» y
+  auto-scroll inteligente; spinner `busy` en el botón de acción durante la petición y
+  banner de error con botón ✕ y autocierre a los 8 s.
+
 ### Changed
 - Canvas panel redesigned to match the awesome-copilot reference canvases (#85): host-theme
   variables with light/dark fallback, live status dot and per-state counters in the header,
